@@ -25,6 +25,9 @@
     let editorWrapper: HTMLDivElement;
     let lineNumbers: string = '1';
     let sidebarWidth: number = 30; // Initial width in percentage
+    let autoSaveTimeout: number | null = null; // For auto-save debounce
+    let openFiles: FileEntry[] = []; // Buffer of open files
+    let activeFileIndex: number = -1; // Index of the currently active file in the buffer
 
     onMount(async () => {
         projectPath = localStorage.getItem('projectPath');
@@ -49,11 +52,17 @@
             await loadChildren(rootEntry);
         }
 
-        // Add keyboard shortcut for save
+        // Add keyboard shortcut for save and navigation
         window.addEventListener('keydown', handleKeyDown);
 
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
+
+            // Clear any pending auto-save timeout when component unmounts
+            if (autoSaveTimeout !== null) {
+                clearTimeout(autoSaveTimeout);
+                autoSaveTimeout = null;
+            }
         };
     });
 
@@ -65,6 +74,30 @@
                 saveFile();
             }
         }
+
+        // Escape key to go back to welcome screen
+        if (event.key === 'Escape') {
+            goToWelcomeScreen();
+        }
+    }
+
+    function goToWelcomeScreen() {
+        // If there are unsaved changes, show a confirmation dialog
+        if (isEdited) {
+            const confirmed = confirm("You have unsaved changes. Are you sure you want to leave?");
+            if (!confirmed) {
+                return;
+            }
+        }
+
+        // Clear any pending auto-save timeout
+        if (autoSaveTimeout !== null) {
+            clearTimeout(autoSaveTimeout);
+            autoSaveTimeout = null;
+        }
+
+        // Navigate to the welcome screen
+        window.location.href = "/";
     }
 
     async function loadFiles(path?: string, level: number = 0) {
@@ -160,11 +193,29 @@
             return;
         }
 
+        // Clear any pending auto-save timeout
+        if (autoSaveTimeout !== null) {
+            clearTimeout(autoSaveTimeout);
+            autoSaveTimeout = null;
+        }
+
         // If it's a file, check for unsaved changes first
         if (isEdited) {
             if (!confirm("You have unsaved changes. Do you want to discard them?")) {
                 return;
             }
+        }
+
+        // Check if the file is already open
+        const existingIndex = openFiles.findIndex(file => file.path === item.path);
+
+        if (existingIndex !== -1) {
+            // If the file is already open, just switch to it
+            activeFileIndex = existingIndex;
+        } else {
+            // Add the file to the open files buffer
+            openFiles = [...openFiles, item];
+            activeFileIndex = openFiles.length - 1;
         }
 
         selectedFile = item.path;
@@ -188,6 +239,33 @@
         editorContent = target.value;
         isEdited = editorContent !== fileContent;
         updateLineNumbers(editorContent);
+
+        // Auto-save functionality with debounce
+        if (isEdited && selectedFile) {
+            // Clear any existing timeout
+            if (autoSaveTimeout !== null) {
+                clearTimeout(autoSaveTimeout);
+            }
+
+            // Set a new timeout to save after 2 seconds of inactivity
+            autoSaveTimeout = setTimeout(() => {
+                autoSave();
+                autoSaveTimeout = null;
+            }, 500);
+        }
+    }
+
+    async function autoSave() {
+        if (isEdited && selectedFile && fileContent !== "Cannot display contents of the file") {
+            try {
+                await invoke("write_file", { path: selectedFile, content: editorContent });
+                fileContent = editorContent;
+                isEdited = false;
+                console.log("Auto-saved file successfully");
+            } catch (error) {
+                console.error("Error auto-saving file:", error);
+            }
+        }
     }
 
     function updateLineNumbers(text: string) {
@@ -257,6 +335,79 @@
         }
     }
 
+    // Function to switch to a specific file in the buffer
+    async function switchToFile(index: number) {
+        if (index < 0 || index >= openFiles.length) return;
+
+        // Check for unsaved changes first
+        if (isEdited) {
+            if (!confirm("You have unsaved changes. Do you want to discard them?")) {
+                return;
+            }
+        }
+
+        // Clear any pending auto-save timeout
+        if (autoSaveTimeout !== null) {
+            clearTimeout(autoSaveTimeout);
+            autoSaveTimeout = null;
+        }
+
+        activeFileIndex = index;
+        const file = openFiles[index];
+        selectedFile = file.path;
+
+        try {
+            fileContent = await invoke("read_file", { path: file.path });
+            editorContent = fileContent;
+            isEdited = false;
+            updateLineNumbers(fileContent);
+        } catch (error) {
+            console.error("Error reading file:", error);
+            fileContent = "Cannot display contents of the file";
+            editorContent = fileContent;
+            isEdited = false;
+            updateLineNumbers(fileContent);
+        }
+    }
+
+    // Function to close a file from the buffer
+    function closeFile(index: number, event: MouseEvent) {
+        // Stop the click event from propagating to the tab
+        event.stopPropagation();
+
+        if (index < 0 || index >= openFiles.length) return;
+
+        // If the file has unsaved changes, confirm before closing
+        if (activeFileIndex === index && isEdited) {
+            if (!confirm("You have unsaved changes. Do you want to discard them?")) {
+                return;
+            }
+        }
+
+        // Remove the file from the buffer
+        openFiles = openFiles.filter((_, i) => i !== index);
+
+        // If we closed the active file
+        if (activeFileIndex === index) {
+            // If there are still files open, switch to the last one
+            if (openFiles.length > 0) {
+                const newIndex = Math.min(index, openFiles.length - 1);
+                switchToFile(newIndex);
+            } else {
+                // No files left open
+                activeFileIndex = -1;
+                selectedFile = null;
+                fileContent = '';
+                editorContent = '';
+                isEdited = false;
+                updateLineNumbers('');
+            }
+        } else if (activeFileIndex > index) {
+            // If we closed a file before the active one, adjust the active index
+            activeFileIndex--;
+        }
+    }
+
     // Handle sidebar resizing
     function handleResize(event: MouseEvent) {
         // Start resizing
@@ -285,7 +436,6 @@
 
 <main>
     <div class="sidebar" style="width: {sidebarWidth}%">
-<!--        <h2>Project</h2>-->
         {#if projectPath}
 <!--            <p class="project-path">{projectPath}</p>-->
 
@@ -322,18 +472,22 @@
     <div class="resizer" on:mousedown={handleResize}></div>
 
     <div class="editor-area" style="width: calc(100% - {sidebarWidth}% - 5px)">
-<!--            <div class="editor-header">-->
-<!--                {#if selectedFile}-->
-<!--                    <div class="file-info">-->
-<!--                        <span>{selectedFile.split('/').pop()}</span>-->
-<!--                        <span class="file-type">{getFileType(selectedFile)}</span>-->
-<!--                        {#if isEdited}-->
-<!--                            <span class="edited-indicator">*</span>-->
-<!--                        {/if}-->
-<!--                    </div>-->
-<!--                    <button class="save-button" on:click={saveFile} disabled={!isEdited || fileContent === "Cannot display contents of the file"}>Save</button>-->
-<!--                {/if}-->
-<!--            </div>-->
+            <div class="editor-header" class:editor-header--closed={openFiles.length === 0}>
+                {#each openFiles as file, index}
+                    <div 
+                        class="file-tab" 
+                        class:active={index === activeFileIndex}
+                        on:click={() => switchToFile(index)}
+                    >
+                        <span class="file-tab-name">{file.name}</span>
+                        <button 
+                            class="file-tab-close" 
+                            on:click={(e) => closeFile(index, e)}
+                            title="Close file"
+                        >×</button>
+                    </div>
+                {/each}
+            </div>
 
             {#if selectedFile}
                 <div class="editor-wrapper" bind:this={editorWrapper}>
@@ -361,6 +515,10 @@
                 </div>
             {/if}
         </div>
+
+    <div class="editor-footer">
+
+    </div>
 </main>
 
 <style lang="scss">
@@ -390,13 +548,10 @@
     }
 
     .sidebar {
-      padding-left: 10px;
-      //padding-top: 15px;
         background-color: var(--grey);
         height: 100vh;
         /* width is now controlled by the style attribute */
-        //overflow-y: auto;
-      user-select: none;
+        user-select: none;
     }
 
     .resizer {
@@ -416,6 +571,74 @@
     .editor-area {
         height: 100vh;
         overflow: hidden;
+    }
+
+    .editor-header {
+      display: flex;
+      background-color: white;
+      border-bottom: 1px solid var(--stroke-grey);
+      height: 30px;
+      overflow-x: scroll;
+      overflow-y: hidden;
+      white-space: nowrap;
+
+      &--closed {
+        display: none;
+      }
+    }
+
+    .file-tab {
+        display: flex;
+        align-items: center;
+        padding: 0 10px;
+        height: 100%;
+        background-color: white;
+        color: var(--grey);
+        cursor: pointer;
+
+        &:hover {
+            color: black;
+        }
+
+        &.active {
+            color: black;
+          border-bottom: solid 3px var(--accent-green);
+        }
+    }
+
+    .file-tab-name {
+      margin-left: 8px;
+        margin-right: 6px;
+        font-size: 0.9rem;
+    }
+
+    .file-tab-close {
+        background: none;
+        border: none;
+        color: white;
+        font-size: 1.2rem;
+        line-height: 1;
+        padding: 0;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+
+        &:hover {
+          background-color: rgba(255, 255, 255, 0.1);
+          color: white;
+        }
+    }
+
+    .file-tab.active > .file-tab-close {
+      color: var(--grey);
+    }
+
+    .file-tab:hover > .file-tab-close {
+      color: var(--grey);
     }
 
     .file-info {
@@ -563,9 +786,40 @@
       }
 
         .editor-header {
-            background-color: #333;
-            border-bottom-color: #444;
+            background-color: var(--bar-dark);
+            border-bottom: 1px solid var(--stroke-dark);
         }
+
+        .file-tab {
+            background-color: var(--bar-dark);
+            color: #aaa;
+            border-right-color: #1a1a1a;
+
+            &:hover {
+              color: #fff;
+            }
+
+            &.active {
+                color: #fff;
+                border-bottom: solid 3px var(--accent-green);
+            }
+        }
+
+        .file-tab-close {
+            color: var(--bar-dark);
+
+            &:hover {
+                background-color: rgba(255, 255, 255, 0.15);
+            }
+        }
+
+      .file-tab.active > .file-tab-close {
+        color: var(--grey);
+      }
+
+      .file-tab:hover > .file-tab-close {
+        color: var(--grey);
+      }
 
         .line-numbers {
             background-color: var(--background-dark);
