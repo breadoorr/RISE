@@ -42,6 +42,33 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      - name: Debug directory structure
+        run: |
+          pwd
+          ls -la
+          
+      - name: Install frontend dependencies
+        run: |
+          # Find and use the package.json location
+          if [ -f "package.json" ]; then
+            npm install
+          elif [ -f "../package.json" ]; then
+            cd ..
+            npm install
+          else
+            echo "Searching for package.json..."
+            find $(pwd) -name "package.json" -type f | head -n 1
+            # Use the found path or fail if not found
+            PACKAGE_JSON_PATH=$(find $(pwd) -name "package.json" -type f | head -n 1)
+            if [ -n "$PACKAGE_JSON_PATH" ]; then
+              cd $(dirname "$PACKAGE_JSON_PATH")
+              npm install
+            else
+              echo "Error: package.json not found"
+              exit 1
+            fi
+          fi
+
       - name: Install frontend dependencies
         run: npm install
 
