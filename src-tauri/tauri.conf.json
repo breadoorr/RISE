@@ -1,35 +1,60 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "rise",
-  "version": "0.1.0",
-  "identifier": "com.rise.app",
+  "$schema": "https://schema.tauri.app/config/1",
+  "package": {
+    "productName": "rise",
+    "version": "0.1.0"
+  },
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devPath": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../build"
+    "distDir": "../build"
   },
-  "app": {
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "fs": {
+        "all": true,
+        "readFile": true,
+        "writeFile": true,
+        "readDir": true,
+        "createDir": true,
+        "scope": ["**"]
+      },
+      "dialog": {
+        "all": true,
+        "open": true,
+        "save": true
+      },
+      "shell": {
+        "open": true
+      },
+      "window": {
+        "all": true
+      }
+    },
     "windows": [
       {
-        "title": "rise",
+        "title": "RISE IDE - Your Coding Companion",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "transparent": true
       }
     ],
     "security": {
       "csp": null
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.rise.app",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ]
     }
-  },
-  "bundle": {
-    "active": true,
-    "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ]
   }
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { invoke } from "@tauri-apps/api/core";
+    import { invoke } from "@tauri-apps/api";
+    import {ChevronDown, ChevronRight} from "lucide-svelte";
 
     // Define the FileEntry interface to match the Rust struct
     interface FileEntry {
@@ -21,20 +22,20 @@
     let editorContent: string = '';
     let isEdited: boolean = false;
     let lineCount: number = 1;
+    let lineNumbers: string = '';
     let editorElement: HTMLTextAreaElement;
     let editorWrapper: HTMLDivElement;
-    let lineNumbers: string = '1';
     let sidebarWidth: number = 30; // Initial width in percentage
     let autoSaveTimeout: number | null = null; // For auto-save debounce
     let openFiles: FileEntry[] = []; // Buffer of open files
     let activeFileIndex: number = -1; // Index of the currently active file in the buffer
+    let currentLine = 1
 
     onMount(async () => {
         projectPath = localStorage.getItem('projectPath');
         if (projectPath) {
             currentPath = projectPath;
 
-            // Create a root directory entry
             const rootEntry: FileEntry = {
                 path: projectPath,
                 name: `${projectPath.split('/').pop()}`,
@@ -44,21 +45,26 @@
                 level: 0
             };
 
-            // Add the root entry to the files array
             files = [rootEntry];
             updateAllFiles();
 
-            // Load the children of the root directory
             await loadChildren(rootEntry);
         }
 
-        // Add keyboard shortcut for save and navigation
         window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', updateCurrentLine);
+        window.addEventListener('click', updateCurrentLine);
+        window.addEventListener('resize', syncLineNumbersScroll);
+
+        // Initial sync after the component is mounted
+        setTimeout(syncLineNumbersScroll, 0);
 
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', updateCurrentLine);
+            window.removeEventListener('click', updateCurrentLine);
+            window.removeEventListener('resize', syncLineNumbersScroll);
 
-            // Clear any pending auto-save timeout when component unmounts
             if (autoSaveTimeout !== null) {
                 clearTimeout(autoSaveTimeout);
                 autoSaveTimeout = null;
@@ -73,30 +79,19 @@
             if (selectedFile && isEdited) {
                 saveFile();
             }
-        }
-
-        // Escape key to go back to welcome screen
-        if (event.key === 'Escape') {
+        } else if (event.key === 'Escape') {
             goToWelcomeScreen();
+        } else {
+            handleEditorChange(event);
         }
     }
 
     function goToWelcomeScreen() {
-        // If there are unsaved changes, show a confirmation dialog
-        if (isEdited) {
-            const confirmed = confirm("You have unsaved changes. Are you sure you want to leave?");
-            if (!confirmed) {
-                return;
-            }
-        }
-
-        // Clear any pending auto-save timeout
         if (autoSaveTimeout !== null) {
             clearTimeout(autoSaveTimeout);
             autoSaveTimeout = null;
         }
 
-        // Navigate to the welcome screen
         window.location.href = "/";
     }
 
@@ -151,7 +146,6 @@
         flattenFiles(files);
     }
 
-    // Function to load children of a directory
     async function loadChildren(item: FileEntry) {
         if (!item.is_dir) return;
 
@@ -162,22 +156,6 @@
             console.error("Error loading children:", error);
         }
     }
-
-    // This function is no longer needed as we're using a hierarchical view
-    // Kept as a comment for reference
-    /*
-    async function navigateUp() {
-        if (!currentPath || currentPath === projectPath) return;
-
-        const pathParts = currentPath.split('/');
-        pathParts.pop(); // Remove the last part
-        const parentPath = pathParts.join('/');
-
-        currentPath = parentPath;
-        selectedFile = null;
-        await loadFiles();
-    }
-    */
 
     async function selectFile(item: FileEntry) {
         // If it's a directory, toggle expansion
@@ -193,13 +171,11 @@
             return;
         }
 
-        // Clear any pending auto-save timeout
         if (autoSaveTimeout !== null) {
             clearTimeout(autoSaveTimeout);
             autoSaveTimeout = null;
         }
 
-        // If it's a file, check for unsaved changes first
         if (isEdited) {
             if (!confirm("You have unsaved changes. Do you want to discard them?")) {
                 return;
@@ -234,20 +210,24 @@
         }
     }
 
+    function updateCurrentLine(event: Event) {
+        const target = event.target as HTMLTextAreaElement;
+        editorContent = target.value;
+        currentLine = editorContent.slice(0, target.selectionStart).split('\n').length;
+    }
+
     function handleEditorChange(event: Event) {
         const target = event.target as HTMLTextAreaElement;
         editorContent = target.value;
         isEdited = editorContent !== fileContent;
         updateLineNumbers(editorContent);
+        updateCurrentLine(event);
 
-        // Auto-save functionality with debounce
         if (isEdited && selectedFile) {
-            // Clear any existing timeout
             if (autoSaveTimeout !== null) {
                 clearTimeout(autoSaveTimeout);
             }
 
-            // Set a new timeout to save after 2 seconds of inactivity
             autoSaveTimeout = setTimeout(() => {
                 autoSave();
                 autoSaveTimeout = null;
@@ -274,23 +254,25 @@
         lineNumbers = Array.from({ length: lines }, (_, i) => i + 1).join('\n');
 
         // Sync scroll position between line numbers and editor
+        syncLineNumbersScroll();
+    }
+
+    function syncLineNumbersScroll() {
         if (editorWrapper && editorElement) {
             const lineNumbersContent = editorWrapper.querySelector('.line-numbers-content') as HTMLDivElement;
             if (lineNumbersContent) {
                 // Use transform to move the line numbers content container
                 lineNumbersContent.style.transform = `translateY(-${editorElement.scrollTop}px)`;
+
+                // Ensure the line numbers container has the same height as the editor content
+                const editorContentHeight = editorElement.scrollHeight;
+                lineNumbersContent.style.height = `${editorContentHeight}px`;
             }
         }
     }
 
     function handleEditorScroll() {
-        if (editorWrapper) {
-            const lineNumbersContent = editorWrapper.querySelector('.line-numbers-content') as HTMLDivElement;
-            if (lineNumbersContent) {
-                // Use transform to move the line numbers content container
-                lineNumbersContent.style.transform = `translateY(-${editorElement.scrollTop}px)`;
-            }
-        }
+        syncLineNumbersScroll();
     }
 
     async function saveFile() {
@@ -426,6 +408,9 @@
             // Stop resizing
             window.removeEventListener('mousemove', onMouseMove);
             window.removeEventListener('mouseup', onMouseUp);
+
+            // Sync line numbers after resizing
+            syncLineNumbersScroll();
         }
 
         // Add event listeners for mouse move and mouse up
@@ -437,26 +422,23 @@
 <main>
     <div class="sidebar" style="width: {sidebarWidth}%">
         {#if projectPath}
-<!--            <p class="project-path">{projectPath}</p>-->
-
             <div class="file-list">
                 {#if allFiles.length > 0}
                     <ul>
                         {#each allFiles as file}
-                            <li
-                                class={`${selectedFile === file.path ? 'selected' : ''} ${file.is_dir ? 'directory' : 'file'}`}
-                                on:click={() => selectFile(file)}
-                                style={`padding-left: ${(file.level || 0) * 1.5 + 0.5}rem`}
-                            >
+                                <li><button on:click={() => selectFile(file)} class={'file-list-item ' + `${selectedFile === file.path ? 'selected' : ''} ${file.is_dir ? 'directory' : 'file'}`}
+                                     style={`padding-left: ${(file.level || 0) * 1.5 + 0.5}rem`}>
                                 <span class="item-icon">
                                     {#if file.is_dir}
-                                        {file.expanded ? 'v' : '>'}
-<!--                                        📁-->
-                                    {:else}
-                                        ▦
+                                        {#if file.expanded}
+                                            <ChevronDown size={16} />
+                                        {:else}
+                                            <ChevronRight size={16} />
+                                        {/if}
                                     {/if}
                                 </span>
                                 {file.name}
+                                </button>
                             </li>
                         {/each}
                     </ul>
@@ -474,7 +456,7 @@
     <div class="editor-area" style="width: calc(100% - {sidebarWidth}% - 5px)">
             <div class="editor-header" class:editor-header--closed={openFiles.length === 0}>
                 {#each openFiles as file, index}
-                    <div 
+                    <div
                         class="file-tab" 
                         class:active={index === activeFileIndex}
                         on:click={() => switchToFile(index)}
@@ -494,18 +476,17 @@
                     <div class="line-numbers">
                         <div class="line-numbers-content">
                             {#each Array(lineCount) as _, i}
-                                <div class="line-number">{i + 1}</div>
+                                <div class="line-number" class:active={i + 1 === currentLine}>{i + 1}</div>
                             {/each}
                         </div>
                     </div>
                     <textarea 
                         class={`code-editor ${fileContent === "Cannot display contents of the file" ? 'no-file-selected' : ''}`}
-                        bind:value={editorContent} 
+                        bind:value={editorContent}
                         bind:this={editorElement}
                         on:input={handleEditorChange}
                         on:scroll={handleEditorScroll}
                         spellcheck="false"
-                        wrap="off"
                         disabled={fileContent === "Cannot display contents of the file"}
                     ></textarea>
                 </div>
@@ -517,25 +498,28 @@
         </div>
 
     <div class="editor-footer">
-
+        <div class="cursor-info">
+            <p class="cursor-info--line-number">Line: {currentLine}</p>
+            <p class="cursor-info--column-number">Col: </p>
+        </div>
     </div>
 </main>
 
 <style lang="scss">
-    /* Reset styles to remove default margins and padding */
     :global(html), :global(body) {
         margin: 0;
         padding: 0;
         height: 100%;
         width: 100%;
         overflow: hidden;
-      user-select: none;
+        --webkit-user-select: none;
     }
 
     :global(body) {
         color: var(--accent-dark);
         background-color: var(--white);
         font-family: sans-serif;
+      user-select: none;
     }
 
     main {
@@ -545,74 +529,82 @@
         width: 100vw;
         display: flex;
         overflow: hidden;
+        user-select: none;
     }
 
     .sidebar {
         background-color: var(--grey);
         height: 100vh;
-        /* width is now controlled by the style attribute */
         user-select: none;
     }
 
     .resizer {
-        width: 5px;
+        width: 2px;
         height: 100vh;
-        background-color: white;
+        background-color: rgb(193, 193, 193);
         cursor: col-resize;
+        user-select: none;
     }
 
     .file-list {
       display: block;
       height: 100vh;
       user-select: none;
-
     }
 
     .editor-area {
         height: 100vh;
         overflow: hidden;
+        user-select: none;
     }
 
     .editor-header {
+      position: relative;
+      z-index: 1;
       display: flex;
       background-color: white;
       border-bottom: 1px solid var(--stroke-grey);
-      height: 30px;
       overflow-x: scroll;
       overflow-y: hidden;
       white-space: nowrap;
+      user-select: none;
 
       &--closed {
+        display: none;
+      }
+
+      &::-webkit-scrollbar {
         display: none;
       }
     }
 
     .file-tab {
-        display: flex;
-        align-items: center;
-        padding: 0 10px;
-        height: 100%;
-        background-color: white;
-        color: var(--grey);
-        cursor: pointer;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      height: 30px;
+      background-color: white;
+      color: gray;
+      cursor: pointer;
+      user-select: none;
 
-        &:hover {
-            color: black;
-        }
+      &:hover {
+        color: black;
+      }
 
-        &.active {
-            color: black;
-          border-bottom: solid 3px var(--accent-green);
-        }
-    }
+      &.active {
+        color: black;
+        border-bottom: solid 3px var(--accent-green);
+      }
 
-    .file-tab-name {
-      margin-left: 8px;
+      &-name {
+        margin-left: 8px;
         margin-right: 6px;
         font-size: 0.9rem;
-    }
+        user-select: none;
+      }
 
-    .file-tab-close {
+      &-close {
         background: none;
         border: none;
         color: white;
@@ -626,19 +618,52 @@
         width: 16px;
         height: 16px;
         border-radius: 50%;
+        user-select: none;
 
         &:hover {
           background-color: rgba(255, 255, 255, 0.1);
           color: white;
         }
+      }
+
+      &.active > &-close {
+        color: var(--grey);
+      }
+
+      &:hover > &-close {
+        color: var(--grey);
+      }
     }
 
-    .file-tab.active > .file-tab-close {
-      color: var(--grey);
+    .editor-footer {
+      width: 100%;
+      height: 25px;
+      position: absolute;
+      left:0;
+      bottom:0;
+      background-color: var(--white);
+      border-top: solid 2px var(--stroke-grey);
+      user-select: none;
     }
 
-    .file-tab:hover > .file-tab-close {
-      color: var(--grey);
+    .cursor-info {
+      position: absolute;
+      bottom: -7px;
+      right: 0;
+      display: block;
+      padding: 0;
+      font-size: 0.8rem;
+      margin-right: 40px;
+      color: gray;
+
+      &--line-number {
+        display: inline-block;
+        margin-right: 5px;
+      }
+      &--column-number {
+        display: inline-block;
+        margin-right: 5px;
+      }
     }
 
     .file-info {
@@ -647,6 +672,7 @@
         color: #555;
         display: flex;
         align-items: center;
+        user-select: none;
     }
 
     .editor-wrapper {
@@ -658,23 +684,30 @@
     }
 
     .line-numbers {
-        padding: 0;
-        background-color: var(--white);
-        font-family: monospace;
-        font-size: 14px;
-        line-height: 1.5;
-        color: #999;
+      padding: 0;
+      background-color: var(--white);
+      font-family: monospace;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #999;
+      user-select: none;
+      overflow: hidden;
+      position: relative;
+      height: 100%;
+
+      &-content {
         user-select: none;
-        overflow: hidden;
-        position: relative; /* Required for proper transform positioning */
-        height: 100%; /* Ensure it has the same height as the editor */
+        padding: 1rem 0.5rem 1rem 0.5rem;
+        margin-bottom: 50px;
+      }
     }
 
-    .line-numbers-content {
-        padding: 1rem 0.3rem 1rem 0.5rem;
+    .line-number.active {
+      color: black;
     }
 
     .code-editor {
+      z-index: 90;
         flex: 1;
         padding: 1rem;
         font-family: monospace;
@@ -689,17 +722,19 @@
         white-space: pre;
         overflow-x: auto;
         overflow-y: auto;
+        margin-bottom: 70px;
+        user-select: text;
     }
 
-    .code-editor.non-displayable {
+    .code-editor.non-displayable, .code-editor.no-file-selected {
         font-family: sans-serif;
         font-size: 16px;
         color: #e74c3c;
-        /*background-color: #3e3434;*/
         text-align: center;
         display: flex;
         align-items: center;
         justify-content: center;
+        user-select: none;
     }
 
     .no-file-selected {
@@ -710,13 +745,14 @@
         background-color: #ffffff;
         color: #999;
         height: 100%;
+        user-select: none;
     }
 
     h2 {
         color: #333;
         margin-top: 0;
         margin-bottom: 1rem;
-      //background-color: #e6e6e7;
+        user-select: none;
     }
 
     .project-path {
@@ -724,22 +760,16 @@
         color: #666;
         margin-bottom: 1rem;
         word-break: break-all;
+        user-select: none;
     }
 
     .file-list {
         overflow-y: scroll;
 
-    }
-
-    .file-list ul {
-        list-style: none;
-        padding-left: 0;
-        margin-bottom: 50px;
-    }
-
-    .file-list li {
+      &-item {
         cursor: pointer;
-        border-radius: 4px;
+        border-radius: 3px;
+        border: none;
         margin-bottom: 0.25rem;
         white-space: nowrap;
         overflow: hidden;
@@ -747,18 +777,25 @@
         display: flex;
         align-items: center;
         transition: background-color 0.2s ease;
-      width: auto;
-      min-width: 100px;
+        width: 100%;
+        min-width: 100px;
+        background-color: var(--grey);
+        font-size: 0.9rem;
+        user-select: none;
+
+        &.selected {
+          background-color: var(--accent-dark);
+          color: white;
+          margin-right: 10px;
+        }
+      }
     }
 
-    .file-list li.selected {
-        background-color: var(--accent-dark);
-        color: white;
-        margin-right: 10px;
-    }
-
-    .file-list li.directory {
-        font-weight: bold;
+    .file-list ul {
+        list-style: none;
+        padding-left: 0;
+        margin-bottom: 50px;
+        user-select: none;
     }
 
     .item-icon {
@@ -766,9 +803,8 @@
         font-size: 1.1rem;
         min-width: 1.5rem;
         text-align: center;
+        user-select: none;
     }
-
-    /* Navigation controls removed as we're using a hierarchical view */
 
     @media (prefers-color-scheme: dark) {
         :global(body) {
@@ -791,39 +827,52 @@
         }
 
         .file-tab {
-            background-color: var(--bar-dark);
-            color: #aaa;
-            border-right-color: #1a1a1a;
+          background-color: var(--bar-dark);
+          color: #aaa;
+          border-right-color: #1a1a1a;
 
-            &:hover {
-              color: #fff;
-            }
+          &:hover {
+            color: #fff;
+          }
 
-            &.active {
-                color: #fff;
-                border-bottom: solid 3px var(--accent-green);
-            }
-        }
+          &.active {
+            color: #fff;
+            border-bottom: solid 3px var(--accent-green);
+          }
 
-        .file-tab-close {
+          &-close {
             color: var(--bar-dark);
 
             &:hover {
-                background-color: rgba(255, 255, 255, 0.15);
+              background-color: rgba(255, 255, 255, 0.15);
             }
+          }
+
+          &.active > &-close {
+            color: var(--grey);
+          }
+
+          &:hover > &-close {
+            color: var(--grey);
+          }
         }
 
-      .file-tab.active > .file-tab-close {
-        color: var(--grey);
+      .editor-footer {
+        background-color: var(--bar-dark);
+        border-top: solid 2px var(--stroke-dark);
       }
 
-      .file-tab:hover > .file-tab-close {
-        color: var(--grey);
+      .cursor-info {
+        color: #aaa;
       }
 
         .line-numbers {
             background-color: var(--background-dark);
             color: #777;
+        }
+
+        .line-number.active {
+            color: #fff;
         }
 
         .line-numbers-content {
@@ -836,7 +885,8 @@
         }
 
         .editor-wrapper {
-            background-color: #1e1e1e;
+            background-color: var(--background-dark);
+
         }
 
         .code-editor {
@@ -862,13 +912,16 @@
             color: #aaa;
         }
 
-        .file-list li:hover {
-            background-color: #3a3a3a;
-        }
+        .file-list {
+          &-item {
+            color: #aaa;
+            background-color: var(--sidebar-dark);
 
-        .file-list li.selected {
-            background-color: #2c3e50;
-            color: #3498db;
+            &.selected {
+              background-color: #2c3e50;
+              color: #3498db;
+            }
+          }
         }
 
         /* Navigation controls removed as we're using a hierarchical view */

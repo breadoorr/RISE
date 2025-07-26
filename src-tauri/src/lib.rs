@@ -146,8 +146,6 @@ async fn list_files(dir_path: String) -> Result<Vec<FileEntry>, String> {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             open_project, 
             create_project,
