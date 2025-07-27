@@ -1,5 +1,6 @@
 name: 'publish'
 
+# Ensure this workflow is triggered on any push to the release branch
 on:
   push:
     branches:
@@ -52,7 +53,9 @@ jobs:
 
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT_TOKEN must be a personal access token with the 'workflow' scope
+          # to allow proper permissions for creating releases
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         with:
           tagName: app-v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version.
           releaseName: 'App v__VERSION__'

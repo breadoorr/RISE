@@ -113,7 +113,21 @@ jobs:
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git checkout -b release
-          git push origin release --force
+
+          # Check if remote branch exists
+          if git ls-remote --heads origin release | grep release; then
+            # Branch exists, fetch and checkout
+            git fetch origin release
+            git checkout release
+            git merge --no-ff --no-edit origin/development
+          else
+            # Branch doesn't exist, create it
+            git checkout -b release
+          fi
+
+          # Push changes to release branch
+          git push origin release
         env:
+          # PAT_TOKEN must be a personal access token with the 'workflow' scope
+          # to allow this push to trigger other workflows
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
