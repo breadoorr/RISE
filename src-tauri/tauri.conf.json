@@ -11,6 +11,7 @@
     "distDir": "../build"
   },
   "tauri": {
+    "macOSPrivateApi": true,
     "allowlist": {
       "all": false,
       "fs": {
@@ -35,11 +36,12 @@
     },
     "windows": [
       {
-        "title": "RISE IDE - Your Coding Companion",
+        "title": "RISE IDE",
         "width": 800,
         "height": 600,
         "transparent": true,
-        "decorations": true
+        "decorations": true,
+        "url": "index.html"
       }
     ],
     "security": {
