@@ -115,3 +115,5 @@ jobs:
           git config user.email github-actions@github.com
           git checkout -b release
           git push origin release --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
