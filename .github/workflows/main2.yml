@@ -1,6 +1,4 @@
 name: 'publish'
-
-# Ensure this workflow is triggered on any push to the release branch
 on:
   push:
     branches:
