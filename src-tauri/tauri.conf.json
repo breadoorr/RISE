@@ -38,6 +38,9 @@
         "title": "RISE IDE",
         "width": 800,
         "height": 600,
+        "minWidth": 300,
+        "minHeight": 0,
+        "resizable": true,
         "transparent": false,
         "decorations": true
       }
