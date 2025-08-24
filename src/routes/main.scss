@@ -3,7 +3,7 @@
   font-size: 16px;
   line-height: 24px;
   font-weight: 400;
-  background-color: var(--background-50);
+  background-color: var(--background-100);
   color: var(--text-900);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -26,7 +26,7 @@
 }
 
 .dialog {
-  background-color: var(--secondary-200);
+  background-color: var(--primary-200);
   border-radius: 8px;
   padding: 2rem;
   width: 100%;
@@ -40,7 +40,7 @@
 
 .dialog h2 {
   margin-bottom: 10%;
-  color: var(--accent-dark);
+  color: var(--text-950);
 }
 
 .form-group {
@@ -90,21 +90,21 @@
   transition: background-color 0.15s ease-in-out;
 
   &.cancel {
-    background-color: #e0e0e0;
-    color: #333;
+    background-color: var(--secondary-800);
+    color: var(--text-100);
 
     &:hover {
-      background-color: #d0d0d0;
+      background-color: var(--secondary-700);
     }
   }
 
   &.confirm {
-    background-color: var(--blue);
-    color: black;
-    box-shadow: 1px 1px 1px 1px var(--accent-green);
+    background-color: var(--accent-500);
+    color: var(--text-100);
+    box-shadow: 1px 1px 1px 1px var(--accent-400);
 
     &:hover {
-      background-color: var(--accent-green);
+      background-color: var(--accent-400);
     }
   }
 }
@@ -143,9 +143,9 @@ li {
   font-size: 1.8em;
   font-weight: 500;
   font-family: inherit;
-  color: black;
+  color: var(--text-900);
   box-shadow: 2px 2px 1px 1px var(--accent-300);
-  background-color: var(--accent-400);
+  background-color: var(--accent-500);
   cursor: pointer;
 
   &:hover {
