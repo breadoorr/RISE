@@ -1,9 +1,9 @@
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use serde::Serialize;
 use hostname;
+use std::process::Command;
 
 #[derive(Serialize)]
 pub struct FileEntry {
@@ -109,67 +109,27 @@ pub async fn is_directory(path: String) -> Result<bool, String> {
 }
 
 #[cfg(target_family = "unix")]
-fn resolve_unix_shell() -> (String, Vec<String>) {
-    // Prefer user's configured shell; fallback sensibly by OS
-    let shell = env::var("SHELL").unwrap_or_else(|_| {
-        #[cfg(target_os = "macos")] { return "/bin/zsh".to_string(); }
-        #[cfg(target_os = "linux")] { return "/bin/bash".to_string(); }
-        #[allow(unreachable_code)]
-        "/bin/sh".to_string()
-    });
-    // Use login shell and run command string; split flags for compatibility (e.g., fish)
-    (shell, vec!["-l".to_string(), "-c".to_string()])
-}
-
 #[cfg(target_family = "unix")]
-fn run_unix_with_fallbacks(cmd: &str, cwd: &str) -> std::io::Result<std::process::Output> {
-    use std::process::Command as PCommand;
+fn run_unix(cmd: &str, cwd: &str) -> std::io::Result<std::process::Output> {
+    let mut c = Command::new("/bin/sh");
+    c.current_dir(cwd).arg("-c").arg(cmd);
 
-    // Helper to set PATH and cwd consistently
-    fn prepare(mut command: PCommand, cwd: &str) -> PCommand {
-        command.current_dir(cwd);
-        let existing = std::env::var("PATH").unwrap_or_default();
-        let defaults = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-        let merged = if existing.is_empty() {
-            defaults.to_string()
-        } else if existing.contains("/opt/homebrew/bin") || existing.contains("/usr/local/bin") {
-            existing
-        } else {
-            format!("{}:{}", existing, defaults)
-        };
-        command.env("PATH", merged);
-        command
-    }
+    // Ensure PATH includes common system + Homebrew locations
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let defaults = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+    let merged = if existing.is_empty() {
+        defaults.to_string()
+    } else {
+        format!("{}:{}", defaults, existing)
+    };
+    c.env("PATH", merged);
 
-    // 1) Try user's shell with -l -c
-    let (user_shell, base_args) = resolve_unix_shell();
-    {
-        let mut c = prepare(PCommand::new(&user_shell), cwd);
-        for a in &base_args { c.arg(a); }
-        c.arg(cmd);
-        if let Ok(out) = c.output() {
-            return Ok(out);
-        }
-    }
-    // 2) Fallbacks: zsh -lc, bash -lc, sh -c
-    for (sh, args) in [
-        ("/bin/zsh", vec!["-lc"]) ,
-        ("/bin/bash", vec!["-lc"]) ,
-        ("/bin/sh", vec!["-c"]) ,
-    ] {
-        let mut c = prepare(PCommand::new(sh), cwd);
-        for a in args { c.arg(a); }
-        c.arg(cmd);
-        if let Ok(out) = c.output() {
-            return Ok(out);
-        }
-    }
-    // If everything fails to spawn, return a not found error
-    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Failed to spawn any shell (/bin/zsh, /bin/bash, /bin/sh)"))
+    c.output()
 }
+
 
 #[tauri::command]
-pub async fn execute_command(cmd: String, cwd: String) -> Result<String, String> {
+pub fn execute_command(cmd: String, cwd: String) -> Result<String, String> {
     let path = Path::new(&cwd);
     if !path.exists() || !path.is_dir() {
         return Err(format!("Invalid working directory: {}", cwd));
@@ -178,21 +138,17 @@ pub async fn execute_command(cmd: String, cwd: String) -> Result<String, String>
     #[cfg(target_os = "windows")]
     let output = Command::new("cmd")
         .current_dir(&cwd)
-        .arg("/C")
-        .arg(&cmd)
+        .args(&["/C", &cmd])
         .output()
         .map_err(|e| format!("Command execution failed: {}", e))?;
 
     #[cfg(target_family = "unix")]
-    let output = match run_unix_with_fallbacks(&cmd, &cwd) {
-        Ok(out) => out,
-        Err(e) => return Err(format!("Command execution failed: {}", e)),
-    };
+    let output = run_unix(&cmd, &cwd)
+        .map_err(|e| format!("Command execution failed: {}", e))?;
 
     let mut stdout = String::from_utf8(output.stdout).unwrap_or_default();
     let mut stderr = String::from_utf8(output.stderr).unwrap_or_default();
 
-    // Normalize newlines for terminal display
     if !stdout.ends_with('\n') && !stdout.is_empty() { stdout.push('\n'); }
     if !stderr.ends_with('\n') && !stderr.is_empty() { stderr.push('\n'); }
 

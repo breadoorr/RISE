@@ -14,6 +14,7 @@ pub use commands::{
 pub use terminal::open_system_terminal;
 
 pub fn run() {
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             open_project,
@@ -28,4 +29,7 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+
+    print!("{:?}", execute_command("echo $PATH".to_string(), ".".to_string()));
+
 }

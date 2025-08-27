@@ -1,6 +1,13 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/tauri";
   import { open } from "@tauri-apps/api/dialog"
+  const tauriInvoke = (cmdName: string, args?: Record<string, any>) => {
+    const g: any = (globalThis as any);
+    if (g && g.__TAURI__ && typeof g.__TAURI__.invoke === 'function') {
+      return g.__TAURI__.invoke(cmdName, args);
+    }
+    return invoke(cmdName as any, args as any);
+  }
 
   let showProjectNameDialog = false;
   let projectName = "rise-project";
@@ -19,7 +26,7 @@
       })
 
       if (selectedPath) {
-        await invoke("open_project", { path: selectedPath });
+        await tauriInvoke("open_project", { path: selectedPath });
         localStorage.setItem('projectPath', selectedPath as string);
         window.location.href = "/editor";
       }
@@ -59,7 +66,7 @@
         // Make sure sanitized name is up to date
         handleProjectNameChange();
 
-        const path = await invoke("create_project", { 
+        const path = await tauriInvoke("create_project", { 
           path: selectedBasePath,
           projectName: sanitizedName // Use the sanitized name
         });

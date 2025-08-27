@@ -1,6 +1,14 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { invoke } from "@tauri-apps/api";
+    // Robust invoke that falls back to the global TAURI bridge if needed
+    const tauriInvoke = (cmdName: string, args?: Record<string, any>) => {
+        const g: any = (globalThis as any);
+        if (g && g.__TAURI__ && typeof g.__TAURI__.invoke === 'function') {
+            return g.__TAURI__.invoke(cmdName, args);
+        }
+        return invoke(cmdName as any, args as any);
+    };
     import { Terminal } from 'xterm';
     import { FitAddon } from 'xterm-addon-fit';
     import { WebLinksAddon } from 'xterm-addon-web-links';
@@ -72,7 +80,7 @@
             await loadChildren(rootEntry);
         }
 
-        const info = await invoke('get_system_info') as { user: string; host: string; home: string };
+        const info = await tauriInvoke('get_system_info') as { user: string; host: string; home: string };
         user = info.user;
         host = info.host;
         home = info.home;
@@ -109,7 +117,7 @@
                         if (command.startsWith('cd ')) {
                             handleCdCommand(command);
                         } else {
-                            invoke('execute_command', { cmd: command, cwd: currentCwd })
+                            tauriInvoke('execute_command', { cmd: command, cwd: currentCwd })
                                 .then((output: string) => {
                                     terminal?.write(`${output}\r\n${getPrompt()}`);
                                     terminal?.scrollToBottom();
@@ -218,7 +226,7 @@
             newCwd = joinPaths(currentCwd, target);
         }
         try {
-            const isDir: boolean = await invoke('is_directory', { path: newCwd });
+            const isDir: boolean = await tauriInvoke('is_directory', { path: newCwd });
             if (isDir) {
                 currentCwd = newCwd;
                 terminal?.write(getPrompt());
@@ -298,7 +306,7 @@
 
     async function loadFiles(path: string, level: number = 0) {
         try {
-            const dirFiles = await invoke("list_files", { dirPath: path }) as FileEntry[];
+            const dirFiles = await tauriInvoke("list_files", { dirPath: path }) as FileEntry[];
             dirFiles.sort((a, b) => {
                 if (a.is_dir && !b.is_dir) return -1;
                 if (!a.is_dir && b.is_dir) return 1;
@@ -411,7 +419,7 @@
     async function autoSave() {
         if (isEdited && selectedFile && fileContent !== "Cannot display contents of the file") {
             try {
-                await invoke("write_file", { path: selectedFile, content: editorContent });
+                await tauriInvoke("write_file", { path: selectedFile, content: editorContent });
                 fileContent = editorContent;
                 isEdited = false;
                 console.log("Auto-saved file successfully");
@@ -439,7 +447,7 @@
     async function saveFile() {
         if (!selectedFile) return;
         try {
-            await invoke("write_file", { path: selectedFile, content: editorContent });
+            await tauriInvoke("write_file", { path: selectedFile, content: editorContent });
             fileContent = editorContent;
             isEdited = false;
             alert("File saved successfully!");
@@ -460,7 +468,7 @@
         selectedFile = file.path;
 
         try {
-            fileContent = await invoke("read_file", { path: file.path });
+            fileContent = await tauriInvoke("read_file", { path: file.path });
             editorContent = fileContent;
             isEdited = false;
             updateLineNumbers(fileContent);
