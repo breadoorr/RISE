@@ -1,15 +1,16 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { invoke } from "@tauri-apps/api";
+    import { Terminal } from 'xterm';
+    import { FitAddon } from 'xterm-addon-fit';
+    import { WebLinksAddon } from 'xterm-addon-web-links';
+    import 'xterm/css/xterm.css';
     import {
         ChevronDown,
         ChevronRight,
         File,
         Folder,
-        Terminal,
-        TerminalIcon,
-        TerminalSquare,
-        TerminalSquareIcon
+        Terminal as TerminalIcon,
     } from "lucide-svelte";
 
     interface FileEntry {
@@ -36,10 +37,22 @@
     let editorElement: HTMLTextAreaElement;
     let editorWrapper: HTMLDivElement;
     let sidebarWidth: number = 300;
+    let terminalHeight: number = 200;
     let autoSaveTimeout: number | null = null;
     let openFiles: FileEntry[] = [];
     let activeFileIndex: number = -1;
     let isSidebarOpen: boolean = true;
+    let isTerminalOpen: boolean = false;
+    let terminalElement: HTMLDivElement;
+    let terminal: Terminal | null = null;
+    let fitAddon: FitAddon | null = null;
+    let commandBuffer: string = '';
+    let history: string[] = [];
+    let historyIndex: number = -1;
+    let user: string = '';
+    let host: string = '';
+    let home: string = '';
+    let currentCwd: string = '';
 
     onMount(async () => {
         projectPath = localStorage.getItem('projectPath');
@@ -59,10 +72,96 @@
             await loadChildren(rootEntry);
         }
 
+        const info = await invoke('get_system_info') as { user: string; host: string; home: string };
+        user = info.user;
+        host = info.host;
+        home = info.home;
+        currentCwd = projectPath || home;
+
+        if (terminalElement) {
+            terminal = new Terminal({
+                theme: { background: '#1e1e1e', foreground: '#ffffff' },
+                fontFamily: 'monospace',
+                fontSize: 14,
+                allowTransparency: true,
+                convertEol: true,
+                scrollback: 1000,
+            });
+
+            fitAddon = new FitAddon();
+            terminal.loadAddon(fitAddon);
+            terminal.loadAddon(new WebLinksAddon());
+
+            terminal.open(terminalElement);
+            terminal.write('Welcome to RISE IDE Terminal!\r\n' + getPrompt());
+            terminal.scrollToBottom();
+
+            terminal.onKey((event) => {
+                const ev = event.domEvent;
+                const key = ev.key;
+
+                if (key === 'Enter') {
+                    terminal.write('\r\n');
+                    const command = commandBuffer.trim();
+                    if (command) {
+                        history.push(command);
+                        historyIndex = history.length;
+                        if (command.startsWith('cd ')) {
+                            handleCdCommand(command);
+                        } else {
+                            invoke('execute_command', { cmd: command, cwd: currentCwd })
+                                .then((output: string) => {
+                                    terminal?.write(`${output}\r\n${getPrompt()}`);
+                                    terminal?.scrollToBottom();
+                                })
+                                .catch((error) => {
+                                    terminal?.write(`Error: ${error}\r\n${getPrompt()}`);
+                                    terminal?.scrollToBottom();
+                                });
+                        }
+                    } else {
+                        terminal.write(getPrompt());
+                        terminal.scrollToBottom();
+                    }
+                    commandBuffer = '';
+                } else if (key === 'Backspace') {
+                    if (commandBuffer.length > 0) {
+                        commandBuffer = commandBuffer.slice(0, -1);
+                        terminal.write('\b \b');
+                        terminal.scrollToBottom();
+                    }
+                } else if (key === 'ArrowUp') {
+                    if (historyIndex > 0) {
+                        historyIndex--;
+                        updateCommandLine(history[historyIndex]);
+                        terminal.scrollToBottom();
+                    }
+                } else if (key === 'ArrowDown') {
+                    if (historyIndex < history.length - 1) {
+                        historyIndex++;
+                        updateCommandLine(history[historyIndex]);
+                    } else if (historyIndex === history.length - 1) {
+                        historyIndex = history.length;
+                        updateCommandLine('');
+                    }
+                    terminal.scrollToBottom();
+                } else if (ev.ctrlKey && key.toLowerCase() === 'l') {
+                    terminal.reset();
+                    terminal.write(getPrompt());
+                    commandBuffer = '';
+                    terminal.scrollToBottom();
+                } else if (!ev.ctrlKey && !ev.altKey && !ev.metaKey && key.length === 1 && key >= ' ' && key <= '~') {
+                    commandBuffer += key;
+                    terminal.write(key);
+                    terminal.scrollToBottom();
+                }
+            });
+        }
+
         window.addEventListener('keydown', handleKeyDown);
         window.addEventListener('keyup', handleInputEvent);
         window.addEventListener('click', handleInputEvent);
-        window.addEventListener('resize', syncLineNumbersScroll);
+        window.addEventListener('resize', handleWindowResize);
         window.addEventListener('focus', restoreEditorContent);
 
         syncLineNumbersScroll();
@@ -71,13 +170,118 @@
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleInputEvent);
             window.removeEventListener('click', handleInputEvent);
-            window.removeEventListener('resize', syncLineNumbersScroll);
+            window.removeEventListener('resize', handleWindowResize);
             window.removeEventListener('focus', restoreEditorContent);
             if (autoSaveTimeout !== null) {
                 clearTimeout(autoSaveTimeout);
             }
+            if (terminal) {
+                terminal.dispose();
+            }
         };
     });
+
+    function getPrompt(): string {
+        const dir = currentCwd.split(/[\/\\]/).pop() || '';
+        return `${user}@${host} ${dir} % `;
+    }
+
+    function joinPaths(base: string, relative: string): string {
+        const sep = base.includes('\\') ? '\\' : '/';
+        if (relative.match(/^[a-zA-Z]:/) || relative.startsWith('/')) {
+            return relative;
+        }
+        let parts = base.split(sep).filter((p) => p !== '');
+        relative.split(sep).forEach((part) => {
+            if (part === '' || part === '.') return;
+            if (part === '..') {
+                if (parts.length > 0) parts.pop();
+                return;
+            }
+            parts.push(part);
+        });
+        let newPath = parts.join(sep);
+        if (base.startsWith(sep) || base.match(/^[a-zA-Z]:/)) {
+            newPath = (base.startsWith(sep) ? sep : '') + newPath;
+        }
+        return newPath;
+    }
+
+    async function handleCdCommand(command: string) {
+        let target = command.slice(3).trim();
+        let newCwd: string;
+        if (target === '' || target === '~') {
+            newCwd = home;
+        } else if (target.startsWith('~/')) {
+            newCwd = joinPaths(home, target.slice(2));
+        } else {
+            newCwd = joinPaths(currentCwd, target);
+        }
+        try {
+            const isDir: boolean = await invoke('is_directory', { path: newCwd });
+            if (isDir) {
+                currentCwd = newCwd;
+                terminal?.write(getPrompt());
+            } else {
+                terminal?.write(`No such directory: ${newCwd}\r\n${getPrompt()}`);
+            }
+        } catch (error) {
+            terminal?.write(`Error: ${error}\r\n${getPrompt()}`);
+            terminal?.scrollToBottom();
+        }
+        terminal?.scrollToBottom();
+    }
+
+    function updateCommandLine(newCommand: string) {
+        const currentPrompt = getPrompt();
+        const eraseLength = currentPrompt.length + commandBuffer.length;
+        const eraseStr = ' '.repeat(eraseLength);
+        terminal?.write('\r' + eraseStr + '\r' + currentPrompt + newCommand);
+        commandBuffer = newCommand;
+        terminal?.scrollToBottom();
+    }
+
+    function handleWindowResize() {
+        if (isTerminalOpen && fitAddon) {
+            fitAddon.fit();
+            terminal?.scrollToBottom();
+        }
+        syncLineNumbersScroll();
+    }
+
+    function toggleTerminal() {
+        isTerminalOpen = !isTerminalOpen;
+        if (isTerminalOpen && terminal && fitAddon) {
+            fitAddon.fit();
+            terminal.focus();
+            terminal.scrollToBottom();
+        }
+    }
+
+    function handleTerminalResize(event: MouseEvent) {
+        const startY = event.clientY;
+        const startHeight = terminalHeight;
+        const minHeight = 100;
+        const maxHeight = window.innerHeight * 0.5;
+
+        function onMouseMove(moveEvent: MouseEvent) {
+            const deltaY = startY - moveEvent.clientY;
+            const newHeight = startHeight + deltaY;
+            terminalHeight = Math.max(minHeight, Math.min(maxHeight, newHeight));
+            if (fitAddon) {
+                fitAddon.fit();
+                terminal?.scrollToBottom();
+            }
+        }
+
+        function onMouseUp() {
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+        }
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+    }
 
     function handleKeyDown(event: KeyboardEvent) {
         if ((event.ctrlKey || event.metaKey) && event.key === 's') {
@@ -183,7 +387,6 @@
         if (target === editorElement && target.value !== undefined) {
             editorContent = target.value;
             currentLine = editorContent.slice(0, target.selectionStart).split('\n').length;
-
             currentColumn = target.selectionStart - editorContent.slice(0, target.selectionStart).lastIndexOf('\n');
         }
     }
@@ -232,6 +435,7 @@
             }
         }
     }
+
     async function saveFile() {
         if (!selectedFile) return;
         try {
@@ -317,11 +521,11 @@
     function handleResize(event: MouseEvent) {
         const startX = event.clientX;
         const startWidth = sidebarWidth;
-        const maxWidth = 600; // Fixed max width in pixels
+        const maxWidth = 600;
 
         function onMouseMove(moveEvent: MouseEvent) {
             const newWidth = startWidth + (moveEvent.clientX - startX);
-            sidebarWidth = Math.max(100, Math.min(maxWidth, newWidth)); // Min 100px, max 600px
+            sidebarWidth = Math.max(100, Math.min(maxWidth, newWidth));
         }
 
         function onMouseUp() {
@@ -353,9 +557,8 @@
         <button class="sidebar--tools-item" class:active={isSidebarOpen} on:click={toggleSidebar}>
             <Folder size={25} />
         </button>
-
-        <button class="sidebar--tools-item bottom">
-            <Terminal size={25} />
+        <button class="sidebar--tools-item bottom" class:active={isTerminalOpen} on:click={toggleTerminal}>
+            <TerminalIcon size={25} />
         </button>
     </div>
     <div class="sidebar" style="width: {sidebarWidth}px">
@@ -397,7 +600,7 @@
     </div>
     <div class="resizer" on:mousedown={handleResize}></div>
 
-    <div class="editor-area" style="width: calc(100% - {sidebarWidth}px - 5px)">
+    <div class="editor-area" style="width: calc(100% - {sidebarWidth}px - 5px); height: {isTerminalOpen ? `calc(100vh - ${terminalHeight}px - 25px)` : 'calc(100vh - 25px)'};">
         <div class="editor-header" class:editor-header--closed={openFiles.length === 0}>
             {#each openFiles as file, index}
                 <div
@@ -424,9 +627,7 @@
                         {/each}
                     </div>
                 </div>
-                <div class="code-editor--highlight">
-
-                </div>
+                <div class="code-editor--highlight"></div>
                 <textarea
                         class={`code-editor ${fileContent === "Cannot display contents of the file" ? 'no-file-selected' : ''}`}
                         bind:value={editorContent}
@@ -444,14 +645,20 @@
         {/if}
     </div>
 
+    <div class="terminal-container" style="display: {isTerminalOpen ? 'block' : 'none'}; height: {isTerminalOpen ? `${terminalHeight}px` : '0'};">
+        <div class="terminal-resizer" on:mousedown={handleTerminalResize}></div>
+        <div class="terminal-wrapper">
+            <div class="terminal" bind:this={terminalElement}></div>
+        </div>
+    </div>
     <div class="editor-footer">
         <div class="cursor-info">
             <p class="cursor-info--line-number">Line: {currentLine}</p>
-            <p class="cursor-info--column-number">Col: {currentColumn} </p>
+            <p class="cursor-info--column-number">Col: {currentColumn}</p>
         </div>
     </div>
 </main>
 
 <style lang="scss">
-    @use 'editor.scss';
+  @use 'editor';
 </style>
