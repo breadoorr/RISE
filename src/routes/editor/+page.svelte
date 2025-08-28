@@ -1,14 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { invoke } from "@tauri-apps/api";
-    // Robust invoke that falls back to the global TAURI bridge if needed
-    const tauriInvoke = (cmdName: string, args?: Record<string, any>) => {
-        const g: any = (globalThis as any);
-        if (g && g.__TAURI__ && typeof g.__TAURI__.invoke === 'function') {
-            return g.__TAURI__.invoke(cmdName, args);
-        }
-        return invoke(cmdName as any, args as any);
-    };
+    import { invoke } from "@tauri-apps/api/tauri";
     import { Terminal } from 'xterm';
     import { FitAddon } from 'xterm-addon-fit';
     import { WebLinksAddon } from 'xterm-addon-web-links';
@@ -80,7 +72,7 @@
             await loadChildren(rootEntry);
         }
 
-        const info = await tauriInvoke('get_system_info') as { user: string; host: string; home: string };
+        const info = await invoke('get_system_info') as { user: string; host: string; home: string };
         user = info.user;
         host = info.host;
         home = info.home;
@@ -96,6 +88,13 @@
                 scrollback: 1000,
             });
 
+            // try {
+            //     const msg = await invoke("open_system_terminal", { dir: currentCwd });
+            //     console.log(msg);
+            // } catch (err) {
+            //     console.error("Failed to open terminal:", err);
+            // }
+
             fitAddon = new FitAddon();
             terminal.loadAddon(fitAddon);
             terminal.loadAddon(new WebLinksAddon());
@@ -104,67 +103,72 @@
             terminal.write('Welcome to RISE IDE Terminal!\r\n' + getPrompt());
             terminal.scrollToBottom();
 
-            terminal.onKey((event) => {
-                const ev = event.domEvent;
-                const key = ev.key;
+            if (terminal != null) {
+                terminal.onKey(async (event) => {
+                    const ev = event.domEvent;
+                    const key = ev.key;
 
-                if (key === 'Enter') {
-                    terminal.write('\r\n');
-                    const command = commandBuffer.trim();
-                    if (command) {
-                        history.push(command);
-                        historyIndex = history.length;
-                        if (command.startsWith('cd ')) {
-                            handleCdCommand(command);
+                    if (key === 'Enter') {
+                        terminal?.write('\r\n');
+                        const command = commandBuffer.trim();
+                        if (command) {
+                            history.push(command);
+                            historyIndex = history.length;
+                            if (command.startsWith('cd ')) {
+                                handleCdCommand(command);
+                            } else {
+                                console.log("hahahah")
+                                await invoke("execute_command", { command, cwd: currentCwd })
+                                    .then((result) => {
+                                        terminal?.write(`${result}\r\n${getPrompt()}`);
+                                        terminal?.scrollToBottom();
+                                    })
+                                    .catch(error => {
+                                        terminal?.write(`${error}\r\n${getPrompt()}`);
+                                        terminal?.scrollToBottom();
+                                    });
+
+                            }
                         } else {
-                            tauriInvoke('execute_command', { cmd: command, cwd: currentCwd })
-                                .then((output: string) => {
-                                    terminal?.write(`${output}\r\n${getPrompt()}`);
-                                    terminal?.scrollToBottom();
-                                })
-                                .catch((error) => {
-                                    terminal?.write(`Error: ${error}\r\n${getPrompt()}`);
-                                    terminal?.scrollToBottom();
-                                });
+                            terminal?.write(getPrompt());
+                            terminal?.scrollToBottom();
                         }
-                    } else {
-                        terminal.write(getPrompt());
-                        terminal.scrollToBottom();
+                        commandBuffer = '';
+                    } else if (key === 'Backspace') {
+                        if (commandBuffer.length > 0) {
+                            commandBuffer = commandBuffer.slice(0, -1);
+                            terminal?.write('\b \b');
+                            terminal?.scrollToBottom();
+                        }
+                    } else if (key === 'ArrowUp') {
+                        if (historyIndex > 0) {
+                            historyIndex--;
+                            updateCommandLine(history[historyIndex]);
+                            terminal?.scrollToBottom();
+                        }
+                    } else if (key === 'ArrowDown') {
+                        if (historyIndex < history.length - 1) {
+                            historyIndex++;
+                            updateCommandLine(history[historyIndex]);
+                        } else if (historyIndex === history.length - 1) {
+                            historyIndex = history.length;
+                            updateCommandLine('');
+                        }
+                        terminal?.scrollToBottom();
+                    } else if (ev.ctrlKey && key.toLowerCase() === 'l') {
+                        terminal?.reset();
+                        terminal?.write(getPrompt());
+                        commandBuffer = '';
+                        terminal?.scrollToBottom();
+                    } else if (!ev.ctrlKey && !ev.altKey && !ev.metaKey && key.length === 1 && key >= ' ' && key <= '~') {
+                        commandBuffer += key;
+                        terminal?.write(key);
+                        terminal?.scrollToBottom();
                     }
-                    commandBuffer = '';
-                } else if (key === 'Backspace') {
-                    if (commandBuffer.length > 0) {
-                        commandBuffer = commandBuffer.slice(0, -1);
-                        terminal.write('\b \b');
-                        terminal.scrollToBottom();
-                    }
-                } else if (key === 'ArrowUp') {
-                    if (historyIndex > 0) {
-                        historyIndex--;
-                        updateCommandLine(history[historyIndex]);
-                        terminal.scrollToBottom();
-                    }
-                } else if (key === 'ArrowDown') {
-                    if (historyIndex < history.length - 1) {
-                        historyIndex++;
-                        updateCommandLine(history[historyIndex]);
-                    } else if (historyIndex === history.length - 1) {
-                        historyIndex = history.length;
-                        updateCommandLine('');
-                    }
-                    terminal.scrollToBottom();
-                } else if (ev.ctrlKey && key.toLowerCase() === 'l') {
-                    terminal.reset();
-                    terminal.write(getPrompt());
-                    commandBuffer = '';
-                    terminal.scrollToBottom();
-                } else if (!ev.ctrlKey && !ev.altKey && !ev.metaKey && key.length === 1 && key >= ' ' && key <= '~') {
-                    commandBuffer += key;
-                    terminal.write(key);
-                    terminal.scrollToBottom();
-                }
-            });
+                });
+            }
         }
+
 
         window.addEventListener('keydown', handleKeyDown);
         window.addEventListener('keyup', handleInputEvent);
@@ -226,7 +230,7 @@
             newCwd = joinPaths(currentCwd, target);
         }
         try {
-            const isDir: boolean = await tauriInvoke('is_directory', { path: newCwd });
+            const isDir: boolean = await invoke('is_directory', { path: newCwd });
             if (isDir) {
                 currentCwd = newCwd;
                 terminal?.write(getPrompt());
@@ -306,7 +310,7 @@
 
     async function loadFiles(path: string, level: number = 0) {
         try {
-            const dirFiles = await tauriInvoke("list_files", { dirPath: path }) as FileEntry[];
+            const dirFiles = await invoke("list_files", { dirPath: path }) as FileEntry[];
             dirFiles.sort((a, b) => {
                 if (a.is_dir && !b.is_dir) return -1;
                 if (!a.is_dir && b.is_dir) return 1;
@@ -419,7 +423,7 @@
     async function autoSave() {
         if (isEdited && selectedFile && fileContent !== "Cannot display contents of the file") {
             try {
-                await tauriInvoke("write_file", { path: selectedFile, content: editorContent });
+                await invoke("write_file", { path: selectedFile, content: editorContent });
                 fileContent = editorContent;
                 isEdited = false;
                 console.log("Auto-saved file successfully");
@@ -447,7 +451,7 @@
     async function saveFile() {
         if (!selectedFile) return;
         try {
-            await tauriInvoke("write_file", { path: selectedFile, content: editorContent });
+            await invoke("write_file", { path: selectedFile, content: editorContent });
             fileContent = editorContent;
             isEdited = false;
             alert("File saved successfully!");
@@ -468,7 +472,7 @@
         selectedFile = file.path;
 
         try {
-            fileContent = await tauriInvoke("read_file", { path: file.path });
+            fileContent = await invoke("read_file", { path: file.path });
             editorContent = fileContent;
             isEdited = false;
             updateLineNumbers(fileContent);

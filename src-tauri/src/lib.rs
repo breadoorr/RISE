@@ -1,5 +1,4 @@
 mod commands;
-mod terminal;
 
 pub use commands::{
     create_project,
@@ -11,7 +10,6 @@ pub use commands::{
     read_file,
     write_file,
 };
-pub use terminal::open_system_terminal;
 
 pub fn run() {
 
@@ -24,12 +22,10 @@ pub fn run() {
             list_files,
             get_system_info,
             is_directory,
-            execute_command,
-            open_system_terminal
+            execute_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 
-    print!("{:?}", execute_command("echo $PATH".to_string(), ".".to_string()));
 
 }

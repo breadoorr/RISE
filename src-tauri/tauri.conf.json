@@ -27,7 +27,7 @@
         "save": true
       },
       "shell": {
-        "open": true
+        "all": true
       },
       "window": {
         "all": true

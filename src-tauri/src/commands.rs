@@ -109,27 +109,30 @@ pub async fn is_directory(path: String) -> Result<bool, String> {
 }
 
 #[cfg(target_family = "unix")]
-#[cfg(target_family = "unix")]
 fn run_unix(cmd: &str, cwd: &str) -> std::io::Result<std::process::Output> {
+    use std::process::Command;
     let mut c = Command::new("/bin/sh");
-    c.current_dir(cwd).arg("-c").arg(cmd);
+    c.current_dir(cwd)
+        .arg("-c")
+        .arg(cmd);
 
-    // Ensure PATH includes common system + Homebrew locations
     let existing = std::env::var("PATH").unwrap_or_default();
-    let defaults = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-    let merged = if existing.is_empty() {
+    let defaults = "/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+    let merged = if existing.trim().is_empty() {
         defaults.to_string()
     } else {
-        format!("{}:{}", defaults, existing)
+        format!("{}:{}", existing, defaults)
     };
+    eprintln!("Using PATH: {}", merged);
     c.env("PATH", merged);
+    c.env("SHELL", "/bin/sh");
 
     c.output()
 }
 
 
 #[tauri::command]
-pub fn execute_command(cmd: String, cwd: String) -> Result<String, String> {
+pub fn execute_command(command: String, cwd: String) -> Result<String, String> {
     let path = Path::new(&cwd);
     if !path.exists() || !path.is_dir() {
         return Err(format!("Invalid working directory: {}", cwd));
@@ -138,12 +141,12 @@ pub fn execute_command(cmd: String, cwd: String) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     let output = Command::new("cmd")
         .current_dir(&cwd)
-        .args(&["/C", &cmd])
+        .args(&["/C", &command])
         .output()
         .map_err(|e| format!("Command execution failed: {}", e))?;
 
     #[cfg(target_family = "unix")]
-    let output = run_unix(&cmd, &cwd)
+    let output = run_unix(&command, &cwd)
         .map_err(|e| format!("Command execution failed: {}", e))?;
 
     let mut stdout = String::from_utf8(output.stdout).unwrap_or_default();
