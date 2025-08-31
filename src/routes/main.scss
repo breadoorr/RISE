@@ -26,12 +26,12 @@
 }
 
 .dialog {
-  background-color: var(--primary-200);
+  background-color: var(--secondary-200);
   border-radius: 8px;
   padding: 2rem;
   width: 100%;
   max-width: 500px;
-  box-shadow: 0 4px 6px var(--secondary-100);
+  box-shadow: 0 4px 6px var(--background-100);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -154,27 +154,27 @@ li {
   }
 }
 
-@media(max-width: 900px) or (max-height:900px) {
-  .header {
-    text-align: center;
-    margin-top: 15vh;
-    font-size: xxx-large;
-  }
+//@media(max-width: 1500px) or (max-height:900px) {
+//  .header {
+//    text-align: center;
+//    margin-top: 15vh;
+//    font-size: xxx-large;
+//  }
+//
+//  .buttons {
+//    margin-top: 20vh;
+//  }
+//
+//  .bt {
+//    font-size: 1.3em;
+//  }
+//
+//  li {
+//    max-width: 180px;
+//  }
+//}
 
-  .buttons {
-    margin-top: 20vh;
-  }
-
-  .bt {
-    font-size: 1.3em;
-  }
-
-  li {
-    max-width: 180px;
-  }
-}
-
-@media (max-width: 700px) or (max-height: 650px) {
+@media (max-width: 3000px) or (max-height: 650px) {
   .header {
     text-align: center;
     margin-top: 20vh;

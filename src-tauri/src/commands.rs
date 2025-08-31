@@ -133,20 +133,91 @@ fn run_unix(cmd: &str, cwd: &str) -> std::io::Result<std::process::Output> {
 
 #[tauri::command]
 pub fn execute_command(command: String, cwd: String) -> Result<String, String> {
+    // Backward-compatible wrapper that uses the system default shell
+    execute_command_with_shell(command, cwd, Some("system".to_string()))
+}
+
+fn which_exists(path: &str) -> bool {
+    Path::new(path).exists()
+}
+
+#[cfg(target_family = "unix")]
+fn resolve_unix_shell(shell_opt: Option<String>) -> (String, Vec<String>) {
+    let choice = shell_opt
+        .unwrap_or_else(|| "system".to_string())
+        .to_lowercase();
+
+    let (shell_path, args_prefix) = match choice.as_str() {
+        "zsh" => {
+            let p = if which_exists("/bin/zsh") { "/bin/zsh" } else { "zsh" };
+            (p.to_string(), vec!["-c".to_string()])
+        }
+        "bash" => {
+            let p = if which_exists("/bin/bash") { "/bin/bash" } else { "bash" };
+            (p.to_string(), vec!["-c".to_string()])
+        }
+        "sh" => {
+            let p = if which_exists("/bin/sh") { "/bin/sh" } else { "sh" };
+            (p.to_string(), vec!["-c".to_string()])
+        }
+        _ => {
+            // system default
+            let env_shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            let p = if which_exists(&env_shell) { env_shell } else if which_exists("/bin/zsh") {
+                "/bin/zsh".to_string()
+            } else if which_exists("/bin/bash") {
+                "/bin/bash".to_string()
+            } else {
+                "/bin/sh".to_string()
+            };
+            (p, vec!["-c".to_string()])
+        }
+    };
+
+    (shell_path, args_prefix)
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_shell(shell_opt: Option<String>) -> (String, Vec<String>) {
+    let choice = shell_opt
+        .unwrap_or_else(|| "system".to_string())
+        .to_lowercase();
+
+    match choice.as_str() {
+        "powershell" => ("powershell".to_string(), vec!["-NoLogo".to_string(), "-NoProfile".to_string(), "-Command".to_string()]),
+        "cmd" => ("cmd".to_string(), vec!["/C".to_string()]),
+        _ => {
+            // system default
+            let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\system32\cmd.exe".to_string());
+            // If COMSPEC ends with powershell.exe (unlikely), use powershell semantics
+            if comspec.to_lowercase().contains("powershell.exe") {
+                (comspec, vec!["-NoLogo".to_string(), "-NoProfile".to_string(), "-Command".to_string()])
+            } else {
+                (comspec, vec!["/C".to_string()])
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn execute_command_with_shell(command: String, cwd: String, shell: Option<String>) -> Result<String, String> {
     let path = Path::new(&cwd);
     if !path.exists() || !path.is_dir() {
         return Err(format!("Invalid working directory: {}", cwd));
     }
 
-    #[cfg(target_os = "windows")]
-    let output = Command::new("cmd")
-        .current_dir(&cwd)
-        .args(&["/C", &command])
-        .output()
-        .map_err(|e| format!("Command execution failed: {}", e))?;
-
     #[cfg(target_family = "unix")]
-    let output = run_unix(&command, &cwd)
+    let (prog, mut args) = resolve_unix_shell(shell);
+
+    #[cfg(target_os = "windows")]
+    let (prog, mut args) = resolve_windows_shell(shell);
+
+    args.push(command);
+
+    let output = Command::new(&prog)
+        .current_dir(&cwd)
+        .args(&args)
+        .output()
         .map_err(|e| format!("Command execution failed: {}", e))?;
 
     let mut stdout = String::from_utf8(output.stdout).unwrap_or_default();
@@ -156,4 +227,34 @@ pub fn execute_command(command: String, cwd: String) -> Result<String, String> {
     if !stderr.ends_with('\n') && !stderr.is_empty() { stderr.push('\n'); }
 
     Ok(format!("{}{}", stdout, stderr))
+}
+
+#[tauri::command]
+pub fn get_default_shell() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Requirement: on Windows default is cmd
+        return Ok("cmd".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Requirement: on macOS default is zsh
+        return Ok("zsh".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Requirement: on Linux default is bash
+        return Ok("bash".to_string());
+    }
+
+    #[allow(unreachable_code)]
+    {
+        // Fallback for other Unix-like or unknown targets
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let name = Path::new(&shell).file_name().and_then(|s| s.to_str()).unwrap_or("sh").to_lowercase();
+        let id = match name.as_str() { "zsh" => "zsh", "bash" => "bash", "sh" => "sh", _ => "sh" };
+        Ok(id.to_string())
+    }
 }

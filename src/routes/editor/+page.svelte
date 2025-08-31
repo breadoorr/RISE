@@ -43,16 +43,207 @@
     let activeFileIndex: number = -1;
     let isSidebarOpen: boolean = true;
     let isTerminalOpen: boolean = false;
-    let terminalElement: HTMLDivElement;
-    let terminal: Terminal | null = null;
-    let fitAddon: FitAddon | null = null;
-    let commandBuffer: string = '';
-    let history: string[] = [];
-    let historyIndex: number = -1;
+    // Multitab terminal state
+    type TerminalTab = {
+        id: string;
+        title: string;
+        shellId: string;
+        terminal: Terminal | null;
+        fitAddon: FitAddon | null;
+        element: HTMLDivElement | null;
+        commandBuffer: string;
+        history: string[];
+        historyIndex: number;
+        cwd: string;
+    };
+    let terminalTabs: TerminalTab[] = [];
+    let activeTerminalTabId: string | null = null;
+
+    // Theme utils for xterm
+    function getCssVar(name: string): string {
+        const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+        return v ? v.trim() : '';
+    }
+    function getXtermTheme(): { background: string; foreground: string } {
+        const background = getCssVar('--background-50');
+        const foreground = getCssVar('--text-800');
+        // Fallbacks in case variables are missing
+        return {
+            background: background || '#111111',
+            foreground: foreground || '#e5e7eb',
+        };
+    }
+    function applyThemeToAllTerminals() {
+        const theme = getXtermTheme();
+        terminalTabs.forEach(t => {
+            t.terminal?.setOption('theme', theme as any);
+        });
+    }
+    let themeObserver: MutationObserver | null = null;
+
+    // user/system info
     let user: string = '';
     let host: string = '';
     let home: string = '';
-    let currentCwd: string = '';
+
+    // Terminal shell selection
+    let selectedShell: string = localStorage.getItem('terminalShell') || 'system';
+    let shellMenuOpen: boolean = false;
+    let defaultShellId: string = 'sh';
+    const shellOptions: { id: string; label: string; os: 'unix' | 'mac' | 'win' | 'any' }[] = [
+        { id: 'zsh', label: 'zsh', os: 'mac' },
+        { id: 'bash', label: 'bash', os: 'unix', },
+        { id: 'sh', label: 'sh', os: 'unix' },
+        { id: 'cmd', label: 'Command Prompt (cmd)', os: 'win' },
+        { id: 'powershell', label: 'PowerShell', os: 'win' },
+    ];
+
+    const isWindows = navigator.userAgent.toLowerCase().includes('windows');
+        const isMac = navigator.userAgent.toLowerCase().includes('mac');
+    function shellLabel(id: string): string {
+        if (id === 'system') {
+            const def = defaultShellId;
+            const defLabel = shellOptions.find(o => o.id === def)?.label || def;
+            return `System default (${defLabel})`;
+        }
+        return shellOptions.find(o => o.id === id)?.label || id;
+    }
+
+    function makeTabTitle(shellId: string): string {
+        return `${shellId}`;
+    }
+
+    function nextTabTitleForShell(shellId: string): string {
+        const base = makeTabTitle(shellId);
+        const existingCount = terminalTabs.filter(t => t.shellId === shellId).length;
+        if (existingCount === 0) return base;
+        return `${base} (${existingCount})`;
+    }
+
+    function getActiveTab(): TerminalTab | null {
+        return terminalTabs.find(t => t.id === activeTerminalTabId) || null;
+    }
+
+    function createTerminalTab(shellId: string) {
+        const id = `tab-${Date.now()}-${Math.floor(Math.random()*10000)}`;
+        const cwd = projectPath || home || '';
+        const tab: TerminalTab = {
+            id,
+            title: nextTabTitleForShell(shellId),
+            shellId,
+            terminal: null,
+            fitAddon: null,
+            element: null,
+            commandBuffer: '',
+            history: [],
+            historyIndex: -1,
+            cwd,
+        };
+        terminalTabs = [...terminalTabs, tab];
+        activeTerminalTabId = id;
+        isTerminalOpen = true;
+        // Initialize terminal after DOM binds element
+        setTimeout(() => initTab(id), 0);
+    }
+
+    function initTab(id: string) {
+        const tab = terminalTabs.find(t => t.id === id);
+        if (!tab) return;
+        if (!tab.element) {
+            const el = document.getElementById('term-' + id) as HTMLDivElement | null;
+            if (!el) { setTimeout(() => initTab(id), 0); return; }
+            tab.element = el;
+        }
+        const term = new Terminal({
+            theme: getXtermTheme() as any,
+            fontFamily: 'monospace',
+            lineHeight: 1.4,
+            fontSize: 14,
+            allowTransparency: false,
+            convertEol: true,
+            // rows: Math.floor(terminalHeight/1.6 / 14),
+        });
+        const fit = new FitAddon();
+        term.loadAddon(fit);
+        term.loadAddon(new WebLinksAddon());
+        term.open(tab.element);
+        term.write('Welcome to RISE IDE Terminal!\r\n' + getPromptFor(tab));
+        term.scrollToBottom();
+
+        term.onKey(async (event) => {
+            const ev = event.domEvent;
+            const key = ev.key;
+
+            if (key === 'Enter') {
+                term.write('\r\n');
+                const command = tab.commandBuffer.trim();
+                if (command) {
+                    tab.history.push(command);
+                    tab.historyIndex = tab.history.length;
+                    if (command.startsWith('cd ')) {
+                        await handleCdCommandFor(tab, command);
+                    } else {
+                        await invoke("execute_command_with_shell", { command, cwd: tab.cwd, shell: tab.shellId })
+                            .then((result) => {
+                                term.write(`${result}\r\n${getPromptFor(tab)}`);
+                                term.scrollToBottom();
+                            })
+                            .catch(error => {
+                                term.write(`${error}\r\n${getPromptFor(tab)}`);
+                                term.scrollToBottom();
+                            });
+                    }
+                } else {
+                    term.write(getPromptFor(tab));
+                    term.scrollToBottom();
+                }
+                tab.commandBuffer = '';
+            } else if (key === 'Backspace') {
+                if (tab.commandBuffer.length > 0) {
+                    tab.commandBuffer = tab.commandBuffer.slice(0, -1);
+                    term.write('\b \b');
+                    term.scrollToBottom();
+                }
+            } else if (key === 'ArrowUp') {
+                if (tab.historyIndex > 0) {
+                    tab.historyIndex--;
+                    updateCommandLineFor(tab, tab.history[tab.historyIndex]);
+                    term.scrollToBottom();
+                }
+            } else if (key === 'ArrowDown') {
+                if (tab.historyIndex < tab.history.length - 1) {
+                    tab.historyIndex++;
+                    updateCommandLineFor(tab, tab.history[tab.historyIndex]);
+                } else if (tab.historyIndex === tab.history.length - 1) {
+                    tab.historyIndex = tab.history.length;
+                    updateCommandLineFor(tab, '');
+                }
+                term.scrollToBottom();
+            } else if (ev.ctrlKey && key.toLowerCase() === 'l') {
+                term.reset();
+                term.write(getPromptFor(tab));
+                tab.commandBuffer = '';
+                term.scrollToBottom();
+            } else if (!ev.ctrlKey && !ev.altKey && !ev.metaKey && key.length === 1 && key >= ' ' && key <= '~') {
+                tab.commandBuffer += key;
+                term.write(key);
+                term.scrollToBottom();
+            }
+        });
+
+        tab.terminal = term;
+        tab.fitAddon = fit;
+        // Fit after a tick
+        setTimeout(() => { tab.fitAddon?.fit(); term.scrollToBottom(); }, 0);
+    }
+
+    function onShellChange(e: Event) {
+        const value = (e.target as HTMLSelectElement).value;
+        selectedShell = value;
+        localStorage.setItem('terminalShell', selectedShell);
+        // Open a new terminal tab with the selected shell
+        createTerminalTab(selectedShell);
+    }
 
     onMount(async () => {
         projectPath = localStorage.getItem('projectPath');
@@ -76,99 +267,36 @@
         user = info.user;
         host = info.host;
         home = info.home;
-        currentCwd = projectPath || home;
+        // initial cwd will be set per terminal tab
 
-        if (terminalElement) {
-            terminal = new Terminal({
-                theme: { background: '#1e1e1e', foreground: '#ffffff' },
-                fontFamily: 'monospace',
-                fontSize: 14,
-                allowTransparency: true,
-                convertEol: true,
-                scrollback: 1000,
-            });
-
-            // try {
-            //     const msg = await invoke("open_system_terminal", { dir: currentCwd });
-            //     console.log(msg);
-            // } catch (err) {
-            //     console.error("Failed to open terminal:", err);
-            // }
-
-            fitAddon = new FitAddon();
-            terminal.loadAddon(fitAddon);
-            terminal.loadAddon(new WebLinksAddon());
-
-            terminal.open(terminalElement);
-            terminal.write('Welcome to RISE IDE Terminal!\r\n' + getPrompt());
-            terminal.scrollToBottom();
-
-            if (terminal != null) {
-                terminal.onKey(async (event) => {
-                    const ev = event.domEvent;
-                    const key = ev.key;
-
-                    if (key === 'Enter') {
-                        terminal?.write('\r\n');
-                        const command = commandBuffer.trim();
-                        if (command) {
-                            history.push(command);
-                            historyIndex = history.length;
-                            if (command.startsWith('cd ')) {
-                                handleCdCommand(command);
-                            } else {
-                                console.log("hahahah")
-                                await invoke("execute_command", { command, cwd: currentCwd })
-                                    .then((result) => {
-                                        terminal?.write(`${result}\r\n${getPrompt()}`);
-                                        terminal?.scrollToBottom();
-                                    })
-                                    .catch(error => {
-                                        terminal?.write(`${error}\r\n${getPrompt()}`);
-                                        terminal?.scrollToBottom();
-                                    });
-
-                            }
-                        } else {
-                            terminal?.write(getPrompt());
-                            terminal?.scrollToBottom();
-                        }
-                        commandBuffer = '';
-                    } else if (key === 'Backspace') {
-                        if (commandBuffer.length > 0) {
-                            commandBuffer = commandBuffer.slice(0, -1);
-                            terminal?.write('\b \b');
-                            terminal?.scrollToBottom();
-                        }
-                    } else if (key === 'ArrowUp') {
-                        if (historyIndex > 0) {
-                            historyIndex--;
-                            updateCommandLine(history[historyIndex]);
-                            terminal?.scrollToBottom();
-                        }
-                    } else if (key === 'ArrowDown') {
-                        if (historyIndex < history.length - 1) {
-                            historyIndex++;
-                            updateCommandLine(history[historyIndex]);
-                        } else if (historyIndex === history.length - 1) {
-                            historyIndex = history.length;
-                            updateCommandLine('');
-                        }
-                        terminal?.scrollToBottom();
-                    } else if (ev.ctrlKey && key.toLowerCase() === 'l') {
-                        terminal?.reset();
-                        terminal?.write(getPrompt());
-                        commandBuffer = '';
-                        terminal?.scrollToBottom();
-                    } else if (!ev.ctrlKey && !ev.altKey && !ev.metaKey && key.length === 1 && key >= ' ' && key <= '~') {
-                        commandBuffer += key;
-                        terminal?.write(key);
-                        terminal?.scrollToBottom();
-                    }
-                });
-            }
+        try {
+            defaultShellId = await invoke('get_default_shell') as string;
+        } catch (e) {
+            console.log(e);
         }
+        // Determine initial shell selection
+        const stored = localStorage.getItem('terminalShell');
+        if (isWindows) {
+            selectedShell = (stored && ['cmd','powershell'].includes(stored)) ? stored : defaultShellId;
+        } else {
+            selectedShell = (stored && ['zsh','bash','sh'].includes(stored)) ? stored : defaultShellId;
+        }
+        // Create initial terminal tab
+        createTerminalTab(selectedShell);
 
+        // Listen to system theme changes and re-apply xterm theme to all tabs
+        const mql = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+        const onSchemeChange = () => applyThemeToAllTerminals();
+        if (mql && 'addEventListener' in mql) {
+            mql.addEventListener('change', onSchemeChange);
+        } else if (mql && 'addListener' in mql) {
+            // Safari/older browsers
+            // @ts-ignore
+            mql.addListener(onSchemeChange);
+        }
+        // Also observe class/attr changes on documentElement to catch app theme toggles
+        themeObserver = new MutationObserver(() => applyThemeToAllTerminals());
+        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
 
         window.addEventListener('keydown', handleKeyDown);
         window.addEventListener('keyup', handleInputEvent);
@@ -187,15 +315,31 @@
             if (autoSaveTimeout !== null) {
                 clearTimeout(autoSaveTimeout);
             }
-            if (terminal) {
-                terminal.dispose();
+            if (terminalTabs && terminalTabs.length) {
+                terminalTabs.forEach(t => t.terminal?.dispose());
             }
+            // Clean up theme listeners
+            try {
+                const mql = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+                const onSchemeChange = () => applyThemeToAllTerminals();
+                if (mql && 'removeEventListener' in mql) {
+                    mql.removeEventListener('change', onSchemeChange);
+                } else if (mql && 'removeListener' in mql) {
+                    // @ts-ignore
+                    mql.removeListener(onSchemeChange);
+                }
+            } catch {}
+            try { themeObserver?.disconnect(); } catch {}
         };
     });
 
-    function getPrompt(): string {
-        const dir = currentCwd.split(/[\/\\]/).pop() || '';
-        return `${user}@${host} ${dir} % `;
+    function getPromptFor(tab: TerminalTab): string {
+        const dir = tab.cwd.split(/[\/\\]/).pop() || '';
+        let shellText = `${user}@${host} ${dir} % `;
+        if (tab.shellId === "bash") {
+            shellText = `${host}:${dir} ${user}$ `;
+        }
+        return shellText;
     }
 
     function joinPaths(base: string, relative: string): string {
@@ -219,7 +363,7 @@
         return newPath;
     }
 
-    async function handleCdCommand(command: string) {
+    async function handleCdCommandFor(tab: TerminalTab, command: string) {
         let target = command.slice(3).trim();
         let newCwd: string;
         if (target === '' || target === '~') {
@@ -227,46 +371,54 @@
         } else if (target.startsWith('~/')) {
             newCwd = joinPaths(home, target.slice(2));
         } else {
-            newCwd = joinPaths(currentCwd, target);
+            newCwd = joinPaths(tab.cwd, target);
         }
         try {
             const isDir: boolean = await invoke('is_directory', { path: newCwd });
             if (isDir) {
-                currentCwd = newCwd;
-                terminal?.write(getPrompt());
+                tab.cwd = newCwd;
+                // Keep the tab title stable; do not update on directory change
+                tab.terminal?.write(getPromptFor(tab));
             } else {
-                terminal?.write(`No such directory: ${newCwd}\r\n${getPrompt()}`);
+                tab.terminal?.write(`No such directory: ${newCwd}\r\n${getPromptFor(tab)}`);
             }
         } catch (error) {
-            terminal?.write(`Error: ${error}\r\n${getPrompt()}`);
-            terminal?.scrollToBottom();
+            tab.terminal?.write(`Error: ${error}\r\n${getPromptFor(tab)}`);
+            tab.terminal?.scrollToBottom();
         }
-        terminal?.scrollToBottom();
+        tab.terminal?.scrollToBottom();
     }
 
-    function updateCommandLine(newCommand: string) {
-        const currentPrompt = getPrompt();
-        const eraseLength = currentPrompt.length + commandBuffer.length;
+    function updateCommandLineFor(tab: TerminalTab, newCommand: string) {
+        const currentPrompt = getPromptFor(tab);
+        const eraseLength = currentPrompt.length + tab.commandBuffer.length;
         const eraseStr = ' '.repeat(eraseLength);
-        terminal?.write('\r' + eraseStr + '\r' + currentPrompt + newCommand);
-        commandBuffer = newCommand;
-        terminal?.scrollToBottom();
+        tab.terminal?.write('\r' + eraseStr + '\r' + currentPrompt + newCommand);
+        tab.commandBuffer = newCommand;
+        tab.terminal?.scrollToBottom();
     }
 
     function handleWindowResize() {
-        if (isTerminalOpen && fitAddon) {
-            fitAddon.fit();
-            terminal?.scrollToBottom();
+        const tab = getActiveTab();
+        if (isTerminalOpen && tab?.fitAddon) {
+            tab.fitAddon.fit();
+            tab.terminal?.scrollToBottom();
         }
         syncLineNumbersScroll();
     }
 
     function toggleTerminal() {
         isTerminalOpen = !isTerminalOpen;
-        if (isTerminalOpen && terminal && fitAddon) {
-            fitAddon.fit();
-            terminal.focus();
-            terminal.scrollToBottom();
+        const tab = getActiveTab();
+        if (isTerminalOpen) {
+            if (terminalTabs.length === 0) {
+                // Open default first tab when opening terminal with no tabs
+                createTerminalTab(defaultShellId);
+            } else if (tab?.fitAddon && tab?.terminal) {
+                tab.fitAddon.fit();
+                tab.terminal.focus();
+                tab.terminal.scrollToBottom();
+            }
         }
     }
 
@@ -274,15 +426,16 @@
         const startY = event.clientY;
         const startHeight = terminalHeight;
         const minHeight = 100;
-        const maxHeight = window.innerHeight * 0.5;
+        const maxHeight = window.innerHeight * 0.7;
 
         function onMouseMove(moveEvent: MouseEvent) {
             const deltaY = startY - moveEvent.clientY;
             const newHeight = startHeight + deltaY;
             terminalHeight = Math.max(minHeight, Math.min(maxHeight, newHeight));
-            if (fitAddon) {
-                fitAddon.fit();
-                terminal?.scrollToBottom();
+            const tab = getActiveTab();
+            if (tab?.fitAddon) {
+                tab.fitAddon.fit();
+                tab.terminal?.scrollToBottom();
             }
         }
 
@@ -562,6 +715,40 @@
         }
         return file.name;
     }
+
+    function switchToTerminalTab(id: string) {
+        activeTerminalTabId = id;
+        const tab = getActiveTab();
+        setTimeout(() => { tab?.fitAddon?.fit(); tab?.terminal?.focus(); tab?.terminal?.scrollToBottom(); }, 0);
+    }
+
+    function closeTerminalTab(id: string, e?: MouseEvent) {
+        if (e) e.stopPropagation();
+        const idx = terminalTabs.findIndex(t => t.id === id);
+        if (idx === -1) return;
+        const closing = terminalTabs[idx];
+        closing.terminal?.dispose();
+        terminalTabs = terminalTabs.filter((t, i) => i !== idx);
+        if (activeTerminalTabId === id) {
+            if (terminalTabs.length > 0) {
+                const newIdx = Math.max(0, idx - 1);
+                activeTerminalTabId = terminalTabs[newIdx].id;
+                setTimeout(() => {
+                    const tab = getActiveTab();
+                    tab?.fitAddon?.fit();
+                    tab?.terminal?.focus();
+                }, 0);
+            } else {
+                // When the last tab is closed, close the terminal UI
+                activeTerminalTabId = null;
+                isTerminalOpen = false;
+            }
+        } else if (terminalTabs.length === 0) {
+            // If we closed a non-active tab and no tabs remain, also close the terminal UI
+            activeTerminalTabId = null;
+            isTerminalOpen = false;
+        }
+    }
 </script>
 
 <main>
@@ -573,9 +760,9 @@
             <TerminalIcon size={25} />
         </button>
     </div>
-    <div class="sidebar" style="width: {sidebarWidth}px">
+    <div class="sidebar" style="width: {sidebarWidth}px;">
         {#if projectPath}
-            <div class="file-list">
+            <div class="file-list" style="height: {isTerminalOpen ? `calc(100vh - ${terminalHeight}px)` : 'calc(100vh - 25px)'};">
                 {#if allFiles.length > 0}
                     <ul>
                         {#each allFiles as file}
@@ -612,7 +799,7 @@
     </div>
     <div class="resizer" on:mousedown={handleResize}></div>
 
-    <div class="editor-area" style="width: calc(100% - {sidebarWidth}px - 5px); height: {isTerminalOpen ? `calc(100vh - ${terminalHeight}px - 25px)` : 'calc(100vh - 25px)'};">
+    <div class="editor-area" style="width: calc(100% - {sidebarWidth}px - 5px); height: {isTerminalOpen ? `calc(100% - ${terminalHeight}px - 25px)` : 'calc(100vh - 25px)'};">
         <div class="editor-header" class:editor-header--closed={openFiles.length === 0}>
             {#each openFiles as file, index}
                 <div
@@ -631,7 +818,7 @@
         </div>
 
         {#if selectedFile}
-            <div class="editor-wrapper" bind:this={editorWrapper}>
+            <div class="editor-wrapper" bind:this={editorWrapper} style="height: {isTerminalOpen ? `calc(100vh - ${terminalHeight}px - 70px)` : 'calc(100vh - 70px)'};">
                 <div class="line-numbers">
                     <div class="line-numbers-content">
                         {#each Array(lineCount) as _, i}
@@ -659,8 +846,58 @@
 
     <div class="terminal-container" style="display: {isTerminalOpen ? 'block' : 'none'}; height: {isTerminalOpen ? `${terminalHeight}px` : '0'};">
         <div class="terminal-resizer" on:mousedown={handleTerminalResize}></div>
-        <div class="terminal-wrapper">
-            <div class="terminal" bind:this={terminalElement}></div>
+        <div class="terminal-toolbar">
+            <div class="terminal-toolbar-left">
+                <span class="terminal-title">Terminal</span>
+            </div>
+            <div class="terminal-tabs">
+                {#each terminalTabs as t}
+                    <div class="term-tab" class:active={t.id === activeTerminalTabId} on:click={() => switchToTerminalTab(t.id)}>
+                        <span>{t.title}</span>
+                        <button class="term-tab-close" on:click={(e) => closeTerminalTab(t.id, e)} title="Close tab">×</button>
+                    </div>
+                {/each}
+            </div>
+            <div class="terminal-toolbar-right">
+                <button class="term-tab-add" title="New tab" on:click={() => createTerminalTab(selectedShell)}>+</button>
+                <div class="shell-menu-wrapper">
+                    <button class="shell-menu-toggle" title="Open shell menu" on:click={() => shellMenuOpen = !shellMenuOpen}>
+                        <ChevronDown size={15} />
+                    </button>
+                    {#if shellMenuOpen}
+                        <div class="shell-menu" on:click={() => { /* prevent toolbar click bubbling */ }}>
+                            {#each shellOptions as opt}
+                                {#if isWindows}
+                                    {#if opt.os === 'win'}
+                                        <button class="shell-menu-item" on:click={() => { selectedShell = opt.id; localStorage.setItem('terminalShell', selectedShell); createTerminalTab(opt.id); shellMenuOpen = false; }}>
+                                            {opt.label}
+                                        </button>
+                                    {/if}
+                                {:else if isMac}
+                                    {#if opt.id === 'zsh' || opt.id === 'bash'}
+                                        <button class="shell-menu-item" on:click={() => { selectedShell = opt.id; localStorage.setItem('terminalShell', selectedShell); createTerminalTab(opt.id); shellMenuOpen = false; }}>
+                                            {opt.label}
+                                        </button>
+                                    {/if}
+                                {:else}
+                                    {#if opt.id === 'bash' || opt.id === 'sh'}
+                                        <button class="shell-menu-item" on:click={() => { selectedShell = opt.id; localStorage.setItem('terminalShell', selectedShell); createTerminalTab(opt.id); shellMenuOpen = false; }}>
+                                            {opt.label}
+                                        </button>
+                                    {/if}
+                                {/if}
+                            {/each}
+                        </div>
+                    {/if}
+                </div>
+            </div>
+        </div>
+        <div class="terminal-panes" style="height: calc({terminalHeight}px - 70px)">
+            {#each terminalTabs as t (t.id)}
+                <div class="terminal-pane" style="display: {t.id === activeTerminalTabId ? 'block' : 'none'};">
+                    <div class="terminal" id={"term-" + t.id} bind:this={t.element}></div>
+                </div>
+            {/each}
         </div>
     </div>
     <div class="editor-footer">
