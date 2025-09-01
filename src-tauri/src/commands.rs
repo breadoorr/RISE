@@ -4,6 +4,139 @@ use std::path::Path;
 use serde::Serialize;
 use hostname;
 use std::process::Command;
+// tree-sitter imports for backend syntax highlighting
+use tree_sitter::{Parser, Tree};
+use lazy_static::lazy_static;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use crate::highlight::{get_language_object, collect, escape_html, calculate_edit};
+
+lazy_static! {
+    static ref PARSERS: Mutex<HashMap<String, Parser>> = Mutex::new(HashMap::new());
+    static ref TREES: Mutex<HashMap<String, Tree>> = Mutex::new(HashMap::new());
+    static ref FILE_CONTENTS: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
+}
+
+#[derive(Serialize)]
+pub struct HighlightResult {
+    pub html: String,
+}
+
+
+fn detect_language(param_lang: Option<String>, filename: Option<String>) -> String {
+    if let Some(l) = param_lang {
+        return l.to_lowercase();
+    }
+    if let Some(f) = filename {
+        let fl = f.to_lowercase();
+        if fl.ends_with(".js") || fl.ends_with(".mjs") || fl.ends_with(".cjs") || fl.ends_with(".jsx") {
+            return "javascript".to_string();
+        }
+    }
+    "plaintext".to_string()
+}
+
+#[tauri::command]
+pub fn highlight_ast(code: String, language: String, path: String) -> Result<Vec<(usize, usize, String)>, String> {
+    let mut parsers = PARSERS.lock().unwrap();
+    let mut trees = TREES.lock().unwrap();
+    let mut file_contents = FILE_CONTENTS.lock().unwrap();
+
+    if !parsers.contains_key(&language) {
+        let mut parser = Parser::new();
+        let lang = get_language_object(&language);
+        parser.set_language(&lang).map_err(|e| e.to_string())?;
+        parsers.insert(language.clone(), parser);
+    }
+
+    let old_code = file_contents.get(&path).cloned().unwrap_or_default();
+
+    if let Some(tree) = trees.get_mut(&path) {
+        if let Some(edit) = calculate_edit(&old_code, &code) {
+            tree.edit(&edit);
+        }
+    }
+
+    let parser = parsers.get_mut(&language).unwrap();
+    let old_tree_ref = trees.get(&path);
+    let new_tree = parser.parse(&code, old_tree_ref);
+
+    if let Some(tree) = new_tree {
+        let mut results = Vec::with_capacity(code.len() / 8);
+        collect(tree.root_node(), &code, &mut results);
+        trees.insert(path.clone(), tree);
+        file_contents.insert(path.clone(), code);
+        Ok(results)
+    } else {
+        Ok(vec![])
+    }
+}
+
+#[tauri::command]
+pub fn highlight_html(
+    code: String,
+    language: String,
+    matches: Vec<usize>,
+    query_len: usize,
+    path: String,
+) -> String {
+    if code.is_empty() {
+        return String::new();
+    }
+    if code.len() > 500_000 {
+        return escape_html(&code).replace("\n\n", "\n<span class=\"empty-line\"> </span>\n");
+    }
+
+    let spans = match highlight_ast(code.clone(), language, path) {
+        Ok(spans) => spans,
+        Err(_) => return escape_html(&code).replace("\n\n", "\n<span class=\"empty-line\"> </span>\n"),
+    };
+
+    let mut html = String::with_capacity(code.len() * 2);
+    let mut last_index: usize = 0;
+
+    let match_set: HashSet<(usize, usize)> = if query_len > 0 {
+        matches.into_iter().map(|m| (m, m + query_len)).collect()
+    } else {
+        HashSet::new()
+    };
+
+    let mut spans_sorted = spans;
+    spans_sorted.sort_by_key(|(s, _e, _k)| *s);
+
+    for (start, end, kind) in spans_sorted.into_iter() {
+        if start > last_index {
+            let plain = &code[last_index..start];
+            html.push_str(&escape_html(plain));
+        }
+        if end <= code.len() && start < end {
+            let raw = &code[start..end];
+            let escaped = escape_html(raw);
+            let is_match = match_set.contains(&(start, end));
+            let color_opt = color_for_kind(&kind);
+            if let Some(color) = color_opt {
+                if is_match {
+                    html.push_str(&format!("<span class=\"token find-match\" style=\"color:{}\">{}</span>", color, escaped));
+                } else {
+                    html.push_str(&format!("<span class=\"token\" style=\"color:{}\">{}</span>", color, escaped));
+                }
+            } else {
+                if is_match {
+                    html.push_str(&format!("<span class=\"token find-match\">{}</span>", escaped));
+                } else {
+                    html.push_str(&format!("<span class=\"token\">{}</span>", escaped));
+                }
+            }
+        }
+        last_index = end.min(code.len());
+    }
+
+    if last_index < code.len() {
+        html.push_str(&escape_html(&code[last_index..]));
+    }
+
+    html.replace("\n\n", "\n<span class=\"empty-line\"> </span>\n")
+}
 
 #[derive(Serialize)]
 pub struct FileEntry {
@@ -91,6 +224,16 @@ pub async fn list_files(dir_path: String) -> Result<Vec<FileEntry>, String> {
             entries.push(FileEntry { path: path_str.to_string(), name, is_dir });
         }
     }
+
+    // Sort entries: directories first, then files; alphabetical by name (case-insensitive)
+    entries.sort_by(|a, b| {
+        match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+
     Ok(entries)
 }
 
@@ -108,26 +251,38 @@ pub async fn is_directory(path: String) -> Result<bool, String> {
     Ok(path.exists() && path.is_dir())
 }
 
-#[cfg(target_family = "unix")]
-fn run_unix(cmd: &str, cwd: &str) -> std::io::Result<std::process::Output> {
-    use std::process::Command;
-    let mut c = Command::new("/bin/sh");
-    c.current_dir(cwd)
-        .arg("-c")
-        .arg(cmd);
+#[tauri::command]
+pub async fn change_directory(cwd: String, target: String) -> Result<String, String> {
+    // Resolve new working directory on the backend for cross-platform correctness
+    let home = env::var("HOME").or_else(|_| env::var("USERPROFILE")).unwrap_or_else(|_| cwd.clone());
+    let trimmed = target.trim().to_string();
 
-    let existing = std::env::var("PATH").unwrap_or_default();
-    let defaults = "/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-    let merged = if existing.trim().is_empty() {
-        defaults.to_string()
+    let new_path_buf = if trimmed.is_empty() || trimmed == "~" {
+        Path::new(&home).to_path_buf()
+    } else if trimmed.starts_with("~/") {
+        let rest = trimmed.trim_start_matches("~/");
+        Path::new(&home).join(rest)
     } else {
-        format!("{}:{}", existing, defaults)
+        let t = Path::new(&trimmed);
+        if t.is_absolute() {
+            t.to_path_buf()
+        } else {
+            Path::new(&cwd).join(&trimmed)
+        }
     };
-    eprintln!("Using PATH: {}", merged);
-    c.env("PATH", merged);
-    c.env("SHELL", "/bin/sh");
 
-    c.output()
+    if !new_path_buf.exists() {
+        return Err(format!("No such directory: {}", new_path_buf.to_string_lossy()));
+    }
+    if !new_path_buf.is_dir() {
+        return Err(format!("Not a directory: {}", new_path_buf.to_string_lossy()));
+    }
+
+    let canonical = new_path_buf.canonicalize().unwrap_or(new_path_buf);
+    canonical
+        .to_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Failed to convert path to string".to_string())
 }
 
 
@@ -248,13 +403,54 @@ pub fn get_default_shell() -> Result<String, String> {
         // Requirement: on Linux default is bash
         return Ok("bash".to_string());
     }
+}
 
-    #[allow(unreachable_code)]
-    {
-        // Fallback for other Unix-like or unknown targets
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let name = Path::new(&shell).file_name().and_then(|s| s.to_str()).unwrap_or("sh").to_lowercase();
-        let id = match name.as_str() { "zsh" => "zsh", "bash" => "bash", "sh" => "sh", _ => "sh" };
-        Ok(id.to_string())
+
+// Mapping from token kind to color for inline styling
+fn color_for_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        // Comments
+        "comment" => Some("#7f848e"),
+        // Strings (various languages)
+        "string" | "string_literal" | "template_string" | "raw_string_literal" | "interpreted_string_literal" | "char_literal" => Some("#54790d"),
+        // Numbers
+        "number" | "integer" | "float" | "number_literal" | "float_literal" | "decimal_integer_literal" => Some("#d19a66"),
+        // Regex
+        "regex" => Some("#e06c75"),
+        // Types (where available)
+        "type_identifier" | "type" => Some("#56b6c2"),
+        _ => {
+            if is_keyword(kind) { Some("#c678dd") } else { None }
+        }
+    }
+}
+
+fn is_keyword(kind: &str) -> bool {
+    match kind {
+        // Common JS/TS
+        "function" | "return" | "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default" |
+        "break" | "continue" | "const" | "let" | "var" | "class" | "extends" | "new" | "try" | "catch" |
+        "finally" | "throw" | "import" | "from" | "export" | "as" | "in" | "of" | "instanceof" | "typeof" |
+        "delete" | "void" | "yield" | "await" | "with" | "interface" | "enum" | "implements" | "readonly" |
+        "declare" | "namespace" | "public" | "private" | "protected" | "abstract" | "override" | "static" |
+        "get" | "set" | "this" | "super" | "true" | "false" | "null" | "undefined" | "debugger" |
+        // Rust
+        "fn" | "mut" | "pub" | "struct" | "impl" | "trait" | "where" | "use" | "mod" | "crate" | "super" |
+        "self" | "Self" | "match" | "loop" | "move" | "async" | "unsafe" | "extern" | "ref" | "type" | "const" |
+        // Include shared control flow for Rust too
+        "continue" | "break" |
+        // Python
+        "def" | "elif" | "lambda" | "global" | "nonlocal" | "pass" | "assert" | "del" | "not" | "and" | "or" |
+        "is" | "None" | "True" | "False" | "in" | "raise" | "yield" | "from" | "import" | "as" | "with" |
+        // C/C++ common
+        "int" | "char" | "float" | "double" | "struct" | "union" | "typedef" | "sizeof" | "goto" | "inline" |
+        "signed" | "unsigned" | "short" | "long" | "volatile" | "extern" |
+        // Java / C# common
+        "package" | "throws" | "boolean" | "byte" | "short" | "long" | "native" | "synchronized" | "strictfp" |
+        "transient" | "readonly" | "virtual" | "sealed" | "foreach" |
+        // More C#
+        "namespace" | "using" | "internal" | "dynamic" | "base" | "operator" | "explicit" | "implicit" | "event" |
+        "lock" | "fixed" => true,
+        _ => false,
     }
 }
