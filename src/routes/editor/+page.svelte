@@ -36,6 +36,9 @@
     let currentColumn: number = 1;
     let editorElement: HTMLTextAreaElement;
     let editorWrapper: HTMLDivElement;
+    let highlightContainer: HTMLDivElement;
+    let highlightHtml: string = '';
+    let highlightTimeout: number | null = null;
     let sidebarWidth: number = 300;
     let terminalHeight: number = 200;
     let autoSaveTimeout: number | null = null;
@@ -342,49 +345,14 @@
         return shellText;
     }
 
-    function joinPaths(base: string, relative: string): string {
-        const sep = base.includes('\\') ? '\\' : '/';
-        if (relative.match(/^[a-zA-Z]:/) || relative.startsWith('/')) {
-            return relative;
-        }
-        let parts = base.split(sep).filter((p) => p !== '');
-        relative.split(sep).forEach((part) => {
-            if (part === '' || part === '.') return;
-            if (part === '..') {
-                if (parts.length > 0) parts.pop();
-                return;
-            }
-            parts.push(part);
-        });
-        let newPath = parts.join(sep);
-        if (base.startsWith(sep) || base.match(/^[a-zA-Z]:/)) {
-            newPath = (base.startsWith(sep) ? sep : '') + newPath;
-        }
-        return newPath;
-    }
-
     async function handleCdCommandFor(tab: TerminalTab, command: string) {
-        let target = command.slice(3).trim();
-        let newCwd: string;
-        if (target === '' || target === '~') {
-            newCwd = home;
-        } else if (target.startsWith('~/')) {
-            newCwd = joinPaths(home, target.slice(2));
-        } else {
-            newCwd = joinPaths(tab.cwd, target);
-        }
+        const target = command.slice(3);
         try {
-            const isDir: boolean = await invoke('is_directory', { path: newCwd });
-            if (isDir) {
-                tab.cwd = newCwd;
-                // Keep the tab title stable; do not update on directory change
-                tab.terminal?.write(getPromptFor(tab));
-            } else {
-                tab.terminal?.write(`No such directory: ${newCwd}\r\n${getPromptFor(tab)}`);
-            }
+            const newCwd = await invoke('change_directory', { cwd: tab.cwd, target });
+            tab.cwd = newCwd as string;
+            tab.terminal?.write(getPromptFor(tab));
         } catch (error) {
             tab.terminal?.write(`Error: ${error}\r\n${getPromptFor(tab)}`);
-            tab.terminal?.scrollToBottom();
         }
         tab.terminal?.scrollToBottom();
     }
@@ -563,6 +531,7 @@
             isEdited = editorContent !== fileContent;
             updateLineNumbers(editorContent);
             updateCurrentLine(event);
+            scheduleHighlight();
 
             if (isEdited && selectedFile) {
                 if (autoSaveTimeout !== null) {
@@ -591,12 +560,57 @@
         syncLineNumbersScroll();
     }
 
+    function detectLanguageFromFilename(file: string | null): string {
+        if (!file) return 'typescript';
+        const f = file.toLowerCase();
+        if (f.endsWith('.rs')) return 'rust';
+        if (f.endsWith('.py')) return 'python';
+        if (f.endsWith('.c') || f.endsWith('.h')) return 'c';
+        if (f.endsWith('.java')) return 'java';
+        if (f.endsWith('.cs')) return 'c_sharp';
+        if (f.endsWith('.sql')) return 'sequel';
+        // Use typescript grammar for ts/js by default
+        if (f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.js') || f.endsWith('.jsx')) return 'typescript';
+        return 'typescript';
+    }
+
+    function scheduleHighlight() {
+        if (!selectedFile || fileContent === "Cannot display contents of the file") {
+            highlightHtml = '';
+            return;
+        }
+        if (highlightTimeout !== null) {
+            clearTimeout(highlightTimeout);
+        }
+        const lang = detectLanguageFromFilename(selectedFile);
+        const matches: number[] = []; // integrate find matches later
+        const queryLen = 0;
+        const path = selectedFile;
+        highlightTimeout = setTimeout(async () => {
+            try {
+                const html = await invoke('highlight_html', { code: editorContent, language: lang, matches, queryLen, path }) as string;
+                highlightHtml = html;
+                syncLineNumbersScroll();
+            } catch (e) {
+                console.error('highlight error', e);
+                highlightHtml = '';
+            }
+        }, 0);
+    }
+
     function syncLineNumbersScroll() {
         if (editorWrapper && editorElement) {
             const lineNumbersContent = editorWrapper.querySelector('.line-numbers-content') as HTMLDivElement;
             if (lineNumbersContent) {
                 lineNumbersContent.style.transform = `translateY(-${editorElement.scrollTop}px)`;
                 lineNumbersContent.style.height = `${editorElement.scrollHeight}px`;
+            }
+            if (highlightContainer) {
+                const x = editorElement.scrollLeft;
+                const y = editorElement.scrollTop;
+                highlightContainer.style.transform = `translate(${-x}px, ${-y}px)`;
+                highlightContainer.style.height = `${editorElement.scrollHeight}px`;
+                highlightContainer.style.width = `${editorElement.scrollWidth}px`;
             }
         }
     }
@@ -632,6 +646,7 @@
             if (editorElement) {
                 editorElement.value = editorContent;
             }
+            scheduleHighlight();
         } catch (error) {
             console.error("Error reading file:", error);
             fileContent = "Cannot display contents of the file";
@@ -826,9 +841,12 @@
                         {/each}
                     </div>
                 </div>
-                <div class="code-editor--highlight"></div>
+                <div class="code-editor--highlight" bind:this={highlightContainer}>
+                    {@html highlightHtml}
+                </div>
                 <textarea
                         class={`code-editor ${fileContent === "Cannot display contents of the file" ? 'no-file-selected' : ''}`}
+                        class:with-syntax={highlightHtml && fileContent !== "Cannot display contents of the file"}
                         bind:value={editorContent}
                         bind:this={editorElement}
                         on:input={handleEditorChange}
