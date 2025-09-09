@@ -15,6 +15,11 @@ pub use commands::{
     write_file,
     highlight_ast,
     highlight_html,
+    open_buffer,
+    get_buffer,
+    apply_edit,
+    apply_full_update,
+    undo_last_change,
 };
 
 pub fn run() {
@@ -34,6 +39,11 @@ pub fn run() {
             get_default_shell,
             highlight_ast,
             highlight_html,
+            open_buffer,
+            get_buffer,
+            apply_edit,
+            apply_full_update,
+            undo_last_change,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
