@@ -30,6 +30,7 @@
     let selectedFile: string | null = null;
     let fileContent: string = '';
     let editorContent: string = '';
+    let lastBufferContent: string = '';
     let isEdited: boolean = false;
     let lineCount: number = 1;
     let currentLine: number = 1;
@@ -46,7 +47,7 @@
     let activeFileIndex: number = -1;
     let isSidebarOpen: boolean = true;
     let isTerminalOpen: boolean = false;
-    // Multitab terminal state
+
     type TerminalTab = {
         id: string;
         title: string;
@@ -62,16 +63,16 @@
     let terminalTabs: TerminalTab[] = [];
     let activeTerminalTabId: string | null = null;
 
-    // Theme utils for xterm
     function getCssVar(name: string): string {
         const v = getComputedStyle(document.documentElement).getPropertyValue(name);
         return v ? v.trim() : '';
     }
-    function getXtermTheme(): { background: string; foreground: string } {
-        const background = getCssVar('--background-50');
+    function getXtermTheme(): {cursor: string; background: string; foreground: string } {
+        const cursor = getCssVar('--text-950');
+        const background = getCssVar('--background-100');
         const foreground = getCssVar('--text-800');
-        // Fallbacks in case variables are missing
         return {
+            cursor: cursor || '#e5e7eb',
             background: background || '#111111',
             foreground: foreground || '#e5e7eb',
         };
@@ -79,7 +80,11 @@
     function applyThemeToAllTerminals() {
         const theme = getXtermTheme();
         terminalTabs.forEach(t => {
-            t.terminal?.setOption('theme', theme as any);
+            t.terminal.options.theme = {
+                cursor: theme.cursor,
+                background: theme.background,
+                foreground: theme.foreground,
+            };
         });
     }
     let themeObserver: MutationObserver | null = null;
@@ -97,30 +102,21 @@
         { id: 'zsh', label: 'zsh', os: 'mac' },
         { id: 'bash', label: 'bash', os: 'unix', },
         { id: 'sh', label: 'sh', os: 'unix' },
-        { id: 'cmd', label: 'Command Prompt (cmd)', os: 'win' },
+        { id: 'cmd', label: 'cmd', os: 'win' },
         { id: 'powershell', label: 'PowerShell', os: 'win' },
     ];
 
     const isWindows = navigator.userAgent.toLowerCase().includes('windows');
-        const isMac = navigator.userAgent.toLowerCase().includes('mac');
-    function shellLabel(id: string): string {
-        if (id === 'system') {
-            const def = defaultShellId;
-            const defLabel = shellOptions.find(o => o.id === def)?.label || def;
-            return `System default (${defLabel})`;
-        }
-        return shellOptions.find(o => o.id === id)?.label || id;
-    }
+    const isMac = navigator.userAgent.toLowerCase().includes('mac');
 
     function makeTabTitle(shellId: string): string {
         return `${shellId}`;
     }
 
     function nextTabTitleForShell(shellId: string): string {
-        const base = makeTabTitle(shellId);
         const existingCount = terminalTabs.filter(t => t.shellId === shellId).length;
-        if (existingCount === 0) return base;
-        return `${base} (${existingCount})`;
+        if (existingCount === 0) return `${shellId}`;
+        return `${shellId} (${existingCount})`;
     }
 
     function getActiveTab(): TerminalTab | null {
@@ -164,7 +160,6 @@
             fontSize: 14,
             allowTransparency: false,
             convertEol: true,
-            // rows: Math.floor(terminalHeight/1.6 / 14),
         });
         const fit = new FitAddon();
         term.loadAddon(fit);
@@ -236,16 +231,7 @@
 
         tab.terminal = term;
         tab.fitAddon = fit;
-        // Fit after a tick
         setTimeout(() => { tab.fitAddon?.fit(); term.scrollToBottom(); }, 0);
-    }
-
-    function onShellChange(e: Event) {
-        const value = (e.target as HTMLSelectElement).value;
-        selectedShell = value;
-        localStorage.setItem('terminalShell', selectedShell);
-        // Open a new terminal tab with the selected shell
-        createTerminalTab(selectedShell);
     }
 
     onMount(async () => {
@@ -270,32 +256,22 @@
         user = info.user;
         host = info.host;
         home = info.home;
-        // initial cwd will be set per terminal tab
 
         try {
             defaultShellId = await invoke('get_default_shell') as string;
         } catch (e) {
             console.log(e);
         }
-        // Determine initial shell selection
         const stored = localStorage.getItem('terminalShell');
         if (isWindows) {
             selectedShell = (stored && ['cmd','powershell'].includes(stored)) ? stored : defaultShellId;
         } else {
             selectedShell = (stored && ['zsh','bash','sh'].includes(stored)) ? stored : defaultShellId;
         }
-        // Create initial terminal tab
-        createTerminalTab(selectedShell);
-
-        // Listen to system theme changes and re-apply xterm theme to all tabs
         const mql = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
         const onSchemeChange = () => applyThemeToAllTerminals();
         if (mql && 'addEventListener' in mql) {
             mql.addEventListener('change', onSchemeChange);
-        } else if (mql && 'addListener' in mql) {
-            // Safari/older browsers
-            // @ts-ignore
-            mql.addListener(onSchemeChange);
         }
         // Also observe class/attr changes on documentElement to catch app theme toggles
         themeObserver = new MutationObserver(() => applyThemeToAllTerminals());
@@ -369,6 +345,9 @@
     function handleWindowResize() {
         const tab = getActiveTab();
         if (isTerminalOpen && tab?.fitAddon) {
+            if (terminalHeight > window.innerHeight * 0.7) {
+                terminalHeight = window.innerHeight * 0.7;
+            }
             tab.fitAddon.fit();
             tab.terminal?.scrollToBottom();
         }
@@ -380,7 +359,6 @@
         const tab = getActiveTab();
         if (isTerminalOpen) {
             if (terminalTabs.length === 0) {
-                // Open default first tab when opening terminal with no tabs
                 createTerminalTab(defaultShellId);
             } else if (tab?.fitAddon && tab?.terminal) {
                 tab.fitAddon.fit();
@@ -416,27 +394,36 @@
         window.addEventListener('mouseup', onMouseUp);
     }
 
-    function handleKeyDown(event: KeyboardEvent) {
-        if ((event.ctrlKey || event.metaKey) && event.key === 's') {
-            event.preventDefault();
-            if (selectedFile && isEdited) {
-                saveFile();
+    async function handleKeyDown(event: KeyboardEvent) {
+        if (event.key === 'Tab' && event.target === editorElement) {
+
+        }
+        if (event.ctrlKey || event.metaKey) {
+            if (event.key === 's') {
+                event.preventDefault();
+                if (selectedFile && isEdited) {
+                    saveFile();
+                }
+            } else if (event.key === 'z') {
+                event.preventDefault();
+                if (!selectedFile) return;
+                const result = await invoke('undo_last_change', { path: selectedFile }) as string;
+                editorContent = result;
+                lastBufferContent = result;
+                isEdited = result !== fileContent;
+                if (editorElement) editorElement.value = result;
+                updateLineNumbers(result);
+                scheduleHighlight();
             }
         } else if (event.key === 'Escape') {
             window.location.href = "/";
-        } else if (event.key !== 'Alt' && event.key !== 'Meta') {
-            handleEditorChange(event);
         }
+        // rely on textarea on:input to apply edits; no direct edit on keydown
     }
 
     async function loadFiles(path: string, level: number = 0) {
         try {
             const dirFiles = await invoke("list_files", { dirPath: path }) as FileEntry[];
-            dirFiles.sort((a, b) => {
-                if (a.is_dir && !b.is_dir) return -1;
-                if (!a.is_dir && b.is_dir) return 1;
-                return a.name.localeCompare(b.name);
-            });
 
             for (const file of dirFiles) {
                 file.level = level;
@@ -524,20 +511,33 @@
         }
     }
 
-    function handleEditorChange(event: Event) {
+
+    async function handleEditorChange(event: Event) {
         const target = event.target as HTMLTextAreaElement;
         if (target === editorElement && target.value !== undefined) {
-            editorContent = target.value;
-            isEdited = editorContent !== fileContent;
-            updateLineNumbers(editorContent);
-            updateCurrentLine(event);
-            scheduleHighlight();
-
-            if (isEdited && selectedFile) {
-                if (autoSaveTimeout !== null) {
-                    clearTimeout(autoSaveTimeout);
+            const newVal = target.value;
+            if (!selectedFile || fileContent === "Cannot display contents of the file") {
+                editorContent = newVal;
+                updateLineNumbers(editorContent);
+                updateCurrentLine(event);
+                scheduleHighlight();
+                return;
+            }
+            try {
+                const updated = await invoke('apply_full_update', { path: selectedFile, newContent: newVal }) as string;
+                editorContent = updated;
+                lastBufferContent = updated;
+                isEdited = updated !== fileContent;
+                if (editorElement) editorElement.value = updated;
+                updateLineNumbers(updated);
+                updateCurrentLine(event);
+                scheduleHighlight();
+                if (isEdited && selectedFile) {
+                    if (autoSaveTimeout !== null) clearTimeout(autoSaveTimeout);
+                    autoSaveTimeout = setTimeout(autoSave, 500);
                 }
-                autoSaveTimeout = setTimeout(autoSave, 500);
+            } catch (e) {
+                console.error('apply_full_update failed', e);
             }
         }
     }
@@ -545,8 +545,10 @@
     async function autoSave() {
         if (isEdited && selectedFile && fileContent !== "Cannot display contents of the file") {
             try {
-                await invoke("write_file", { path: selectedFile, content: editorContent });
-                fileContent = editorContent;
+                const buf = await invoke('get_buffer', { path: selectedFile }) as string;
+                editorContent = buf;
+                await invoke("write_file", { path: selectedFile, content: buf });
+                fileContent = buf;
                 isEdited = false;
                 console.log("Auto-saved file successfully");
             } catch (error) {
@@ -569,11 +571,9 @@
         if (f.endsWith('.java')) return 'java';
         if (f.endsWith('.cs')) return 'c_sharp';
         if (f.endsWith('.sql')) return 'sequel';
-        // Use typescript grammar for ts/js by default
         if (f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.js') || f.endsWith('.jsx')) return 'typescript';
         return 'typescript';
     }
-
     function scheduleHighlight() {
         if (!selectedFile || fileContent === "Cannot display contents of the file") {
             highlightHtml = '';
@@ -588,8 +588,7 @@
         const path = selectedFile;
         highlightTimeout = setTimeout(async () => {
             try {
-                const html = await invoke('highlight_html', { code: editorContent, language: lang, matches, queryLen, path }) as string;
-                highlightHtml = html;
+                highlightHtml = await invoke('highlight_html', { code: editorContent, language: lang, matches, queryLen, path }) as string;
                 syncLineNumbersScroll();
             } catch (e) {
                 console.error('highlight error', e);
@@ -618,10 +617,11 @@
     async function saveFile() {
         if (!selectedFile) return;
         try {
-            await invoke("write_file", { path: selectedFile, content: editorContent });
-            fileContent = editorContent;
+            const buf = await invoke('get_buffer', { path: selectedFile }) as string;
+            editorContent = buf;
+            await invoke("write_file", { path: selectedFile, content: buf });
+            fileContent = buf;
             isEdited = false;
-            alert("File saved successfully!");
         } catch (error) {
             console.error("Error saving file:", error);
             alert("Error saving file: " + error);
@@ -639,8 +639,10 @@
         selectedFile = file.path;
 
         try {
-            fileContent = await invoke("read_file", { path: file.path });
+            // initialize backend buffer and get content
+            fileContent = await invoke("open_buffer", { path: file.path }) as string;
             editorContent = fileContent;
+            lastBufferContent = fileContent;
             isEdited = false;
             updateLineNumbers(fileContent);
             if (editorElement) {
@@ -648,9 +650,10 @@
             }
             scheduleHighlight();
         } catch (error) {
-            console.error("Error reading file:", error);
+            console.error("Error opening buffer:", error);
             fileContent = "Cannot display contents of the file";
             editorContent = fileContent;
+            lastBufferContent = editorContent;
             isEdited = false;
             updateLineNumbers(fileContent);
             if (editorElement) {
@@ -718,11 +721,6 @@
         window.addEventListener('mouseup', onMouseUp);
     }
 
-    function toggleSidebar() {
-        sidebarWidth = isSidebarOpen ? 0 : 300;
-        isSidebarOpen = sidebarWidth > 0;
-    }
-
     function getDisplayName(file: FileEntry): string {
         const sameNameCount = openFiles.filter(f => f.name === file.name).length;
         if (sameNameCount > 1 && file.parent_dir) {
@@ -754,12 +752,10 @@
                     tab?.terminal?.focus();
                 }, 0);
             } else {
-                // When the last tab is closed, close the terminal UI
                 activeTerminalTabId = null;
                 isTerminalOpen = false;
             }
         } else if (terminalTabs.length === 0) {
-            // If we closed a non-active tab and no tabs remain, also close the terminal UI
             activeTerminalTabId = null;
             isTerminalOpen = false;
         }
@@ -768,7 +764,10 @@
 
 <main>
     <div class="sidebar--tools">
-        <button class="sidebar--tools-item" class:active={isSidebarOpen} on:click={toggleSidebar}>
+        <button class="sidebar--tools-item" class:active={isSidebarOpen} on:click={ () => {
+            sidebarWidth = isSidebarOpen ? 0 : 300;
+            isSidebarOpen = sidebarWidth > 0;
+        }}>
             <Folder size={25} />
         </button>
         <button class="sidebar--tools-item bottom" class:active={isTerminalOpen} on:click={toggleTerminal}>
@@ -812,7 +811,7 @@
             <p>No project opened</p>
         {/if}
     </div>
-    <div class="resizer" on:mousedown={handleResize}></div>
+    <button aria-label="resizer" class="resizer" on:mousedown={handleResize}></button>
 
     <div class="editor-area" style="width: calc(100% - {sidebarWidth}px - 5px); height: {isTerminalOpen ? `calc(100% - ${terminalHeight}px - 25px)` : 'calc(100vh - 25px)'};">
         <div class="editor-header" class:editor-header--closed={openFiles.length === 0}>
@@ -820,9 +819,10 @@
                 <div
                         class="file-tab"
                         class:active={index === activeFileIndex}
-                        on:click={() => switchToFile(index)}
                 >
-                    <span class="file-tab-name">{getDisplayName(file)}</span>
+                    <button class="file-tab--name-button"on:click={() => switchToFile(index)}>
+                        <span class="file-tab-name">{getDisplayName(file)}</span>
+                    </button>
                     <button
                             class="file-tab-close"
                             on:click={(e) => closeFile(index, e)}
@@ -862,16 +862,18 @@
         {/if}
     </div>
 
-    <div class="terminal-container" style="display: {isTerminalOpen ? 'block' : 'none'}; height: {isTerminalOpen ? `${terminalHeight}px` : '0'};">
-        <div class="terminal-resizer" on:mousedown={handleTerminalResize}></div>
+    <div class="terminal-container" style="display: {isTerminalOpen ? 'flex' : 'none'}; height: {isTerminalOpen ? `${terminalHeight}px` : '0'};">
+        <button aria-label="terminal-resizer" class="terminal-resizer" on:mousedown={handleTerminalResize}></button>
         <div class="terminal-toolbar">
             <div class="terminal-toolbar-left">
                 <span class="terminal-title">Terminal</span>
             </div>
             <div class="terminal-tabs">
                 {#each terminalTabs as t}
-                    <div class="term-tab" class:active={t.id === activeTerminalTabId} on:click={() => switchToTerminalTab(t.id)}>
-                        <span>{t.title}</span>
+                    <div class="term-tab" class:active={t.id === activeTerminalTabId}>
+                        <button class="term-tab--title-button" on:click={() => switchToTerminalTab(t.id)}>
+                            <span>{t.title}</span>
+                        </button>
                         <button class="term-tab-close" on:click={(e) => closeTerminalTab(t.id, e)} title="Close tab">×</button>
                     </div>
                 {/each}
@@ -883,7 +885,7 @@
                         <ChevronDown size={15} />
                     </button>
                     {#if shellMenuOpen}
-                        <div class="shell-menu" on:click={() => { /* prevent toolbar click bubbling */ }}>
+                        <div class="shell-menu">
                             {#each shellOptions as opt}
                                 {#if isWindows}
                                     {#if opt.os === 'win'}
@@ -910,7 +912,7 @@
                 </div>
             </div>
         </div>
-        <div class="terminal-panes" style="height: calc({terminalHeight}px - 70px)">
+        <div class="terminal-panes" style="height: {terminalHeight}px">
             {#each terminalTabs as t (t.id)}
                 <div class="terminal-pane" style="display: {t.id === activeTerminalTabId ? 'block' : 'none'};">
                     <div class="terminal" id={"term-" + t.id} bind:this={t.element}></div>

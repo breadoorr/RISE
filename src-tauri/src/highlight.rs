@@ -14,23 +14,8 @@ pub fn get_language_object(language: &str) -> Language {
 
 pub fn collect(node: tree_sitter::Node, _src: &str, out: &mut Vec<(usize, usize, String)>) {
     if node.child_count() == 0 {
-        // Use parent classification for string-like constructs so that quotes, fragments and escapes
-        // are all highlighted as "string" uniformly across grammars.
-        let mut kind = node.kind().to_string();
-        if let Some(parent) = node.parent() {
-            let pk = parent.kind();
-            if pk == "string"
-                || pk == "template_string"
-                || pk == "string_literal"
-                || pk == "raw_string_literal"
-                || pk == "interpreted_string_literal"
-                || pk == "char_literal"
-                || pk == "f_string"
-                || pk == "concatenated_string"
-            {
-                kind = "string".to_string();
-            }
-        }
+        let kind = node.kind().to_string();
+        // println!("{}", kind);
         out.push((node.start_byte(), node.end_byte(), kind));
     } else {
         let mut cursor = node.walk();
@@ -44,18 +29,6 @@ pub fn escape_html(text: &str) -> String {
     text.replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
-}
-
-pub fn sanitize_class(kind: &str) -> String {
-    kind.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c.to_string()
-            } else {
-                format!("_{}", c as u32)
-            }
-        })
-        .collect()
 }
 
 pub fn calculate_edit(old_code: &str, new_code: &str) -> Option<tree_sitter::InputEdit> {

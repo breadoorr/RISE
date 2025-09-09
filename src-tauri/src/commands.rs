@@ -4,7 +4,6 @@ use std::path::Path;
 use serde::Serialize;
 use hostname;
 use std::process::Command;
-// tree-sitter imports for backend syntax highlighting
 use tree_sitter::{Parser, Tree};
 use lazy_static::lazy_static;
 use std::collections::{HashMap, HashSet};
@@ -17,23 +16,24 @@ lazy_static! {
     static ref FILE_CONTENTS: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
 }
 
+#[derive(Clone, Debug)]
+struct EditEntry {
+    prev_content: String,
+}
+
+#[derive(Clone, Debug)]
+struct EditorBuffer {
+    content: String,
+    undo_stack: Vec<EditEntry>,
+}
+
+lazy_static! {
+    static ref EDITOR_BUFFERS: Mutex<HashMap<String, EditorBuffer>> = Mutex::new(HashMap::new());
+}
+
 #[derive(Serialize)]
 pub struct HighlightResult {
     pub html: String,
-}
-
-
-fn detect_language(param_lang: Option<String>, filename: Option<String>) -> String {
-    if let Some(l) = param_lang {
-        return l.to_lowercase();
-    }
-    if let Some(f) = filename {
-        let fl = f.to_lowercase();
-        if fl.ends_with(".js") || fl.ends_with(".mjs") || fl.ends_with(".cjs") || fl.ends_with(".jsx") {
-            return "javascript".to_string();
-        }
-    }
-    "plaintext".to_string()
 }
 
 #[tauri::command]
@@ -202,6 +202,103 @@ pub async fn read_file(path: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn write_file(path: String, content: String) -> Result<(), String> {
     fs::write(&path, content).map_err(|e| format!("Failed to write file: {}", e))
+}
+
+// ===== Editor buffer and undo commands =====
+#[tauri::command]
+pub async fn open_buffer(path: String) -> Result<String, String> {
+    let content = fs::read_to_string(&path).unwrap_or_default();
+    let mut map = EDITOR_BUFFERS.lock().unwrap();
+    map.insert(path.clone(), EditorBuffer { content: content.clone(), undo_stack: Vec::new() });
+    Ok(content)
+}
+
+#[tauri::command]
+pub async fn get_buffer(path: String) -> Result<String, String> {
+    let mut map = EDITOR_BUFFERS.lock().unwrap();
+    if let Some(buf) = map.get(&path) {
+        return Ok(buf.content.clone());
+    }
+    // initialize empty if missing
+    map.insert(path.clone(), EditorBuffer { content: String::new(), undo_stack: Vec::new() });
+    Ok(String::new())
+}
+
+fn is_boundary(s: &str, idx: usize) -> bool {
+    idx <= s.len() && s.is_char_boundary(idx)
+}
+
+#[tauri::command]
+pub async fn apply_edit(path: String, start: usize, end: usize, new_text: String) -> Result<String, String> {
+    let mut map = EDITOR_BUFFERS.lock().unwrap();
+    let buf = map.entry(path.clone()).or_insert(EditorBuffer { content: String::new(), undo_stack: Vec::new() });
+    let len = buf.content.len();
+    let s = start.min(len);
+    let e = end.min(len);
+    if s > e { return Err("start greater than end".to_string()); }
+    if !is_boundary(&buf.content, s) || !is_boundary(&buf.content, e) {
+        return Err("start/end are not at UTF-8 character boundaries".to_string());
+    }
+    let old_text = &buf.content[s..e];
+    // push undo entry (snapshot of full content before edit)
+    let entry = EditEntry { prev_content: buf.content.clone() };
+    if buf.undo_stack.len() >= 50 { buf.undo_stack.remove(0); }
+    buf.undo_stack.push(entry);
+
+    // apply edit
+    let mut new_content = String::with_capacity(buf.content.len() - old_text.len() + new_text.len());
+    new_content.push_str(&buf.content[..s]);
+    new_content.push_str(&new_text);
+    new_content.push_str(&buf.content[e..]);
+    buf.content = new_content;
+    Ok(buf.content.clone())
+}
+
+#[tauri::command]
+pub async fn undo_last_change(path: String) -> Result<String, String> {
+    let mut map = EDITOR_BUFFERS.lock().unwrap();
+    if let Some(buf) = map.get_mut(&path) {
+        if let Some(entry) = buf.undo_stack.pop() {
+            buf.content = entry.prev_content;
+        }
+        return Ok(buf.content.clone());
+    }
+    Ok(String::new())
+}
+
+#[tauri::command]
+pub async fn apply_full_update(path: String, new_content: String) -> Result<String, String> {
+    let mut map = EDITOR_BUFFERS.lock().unwrap();
+    let buf = map.entry(path.clone()).or_insert(EditorBuffer { content: String::new(), undo_stack: Vec::new() });
+
+    // If unchanged, return current content
+    if buf.content == new_content { return Ok(buf.content.clone()); }
+
+    // Push undo snapshot
+    let entry = EditEntry { prev_content: buf.content.clone() };
+    if buf.undo_stack.len() >= 50 { buf.undo_stack.remove(0); }
+    buf.undo_stack.push(entry);
+
+    // Compute a minimal edit using backend calculate_edit for consistency
+    if let Some(edit) = calculate_edit(&buf.content, &new_content) {
+        // Apply single-span replacement based on calculated byte range
+        let s = edit.start_byte.min(buf.content.len());
+        let e = edit.old_end_byte.min(buf.content.len());
+        if s > e { return Err("calculated start greater than end".to_string()); }
+        // UTF-8 boundary check
+        if !is_boundary(&buf.content, s) || !is_boundary(&buf.content, e) {
+            return Err("calculated start/end are not at UTF-8 character boundaries".to_string()); }
+        let mut updated = String::with_capacity(buf.content.len() - (e - s) + (edit.new_end_byte - edit.start_byte));
+        updated.push_str(&buf.content[..s]);
+        updated.push_str(&new_content[edit.start_byte..edit.new_end_byte]);
+        updated.push_str(&buf.content[e..]);
+        buf.content = updated;
+    } else {
+        // No edit detected; fall back to assigning new content (safety)
+        buf.content = new_content;
+    }
+
+    Ok(buf.content.clone())
 }
 
 #[tauri::command]
@@ -410,15 +507,15 @@ pub fn get_default_shell() -> Result<String, String> {
 fn color_for_kind(kind: &str) -> Option<&'static str> {
     match kind {
         // Comments
-        "comment" => Some("#7f848e"),
+        "comment" | "line_comment" | "block_comment" => Some("#7f848e"),
         // Strings (various languages)
-        "string" | "string_literal" | "template_string" | "raw_string_literal" | "interpreted_string_literal" | "char_literal" => Some("#54790d"),
+        "string_literal" | "template_string" | "raw_string_literal" | "interpreted_string_literal" | "char_literal" | "string_fragment" | "string_content" => Some("#54790d"),
         // Numbers
-        "number" | "integer" | "float" | "number_literal" | "float_literal" | "decimal_integer_literal" => Some("#d19a66"),
+        "number" | "integer" | "float" | "number_literal" | "float_literal" | "decimal_integer_literal" | "integer_literal" => Some("#d19a66"),
         // Regex
         "regex" => Some("#e06c75"),
         // Types (where available)
-        "type_identifier" | "type" => Some("#56b6c2"),
+        "type_identifier" | "type" | "primitive_type" => Some("#56b6c2"),
         _ => {
             if is_keyword(kind) { Some("#c678dd") } else { None }
         }
@@ -435,21 +532,22 @@ fn is_keyword(kind: &str) -> bool {
         "declare" | "namespace" | "public" | "private" | "protected" | "abstract" | "override" | "static" |
         "get" | "set" | "this" | "super" | "true" | "false" | "null" | "undefined" | "debugger" |
         // Rust
-        "fn" | "mut" | "pub" | "struct" | "impl" | "trait" | "where" | "use" | "mod" | "crate" | "super" |
-        "self" | "Self" | "match" | "loop" | "move" | "async" | "unsafe" | "extern" | "ref" | "type" | "const" |
-        // Include shared control flow for Rust too
-        "continue" | "break" |
+        "fn" | "mutable_specifier" | "pub" | "struct" | "impl" | "trait" | "where" | "use" | "mod" | "crate" |
+        "self" | "Self" | "match" | "loop" | "move" | "async" | "unsafe" | "extern" | "ref" | "type" |
         // Python
         "def" | "elif" | "lambda" | "global" | "nonlocal" | "pass" | "assert" | "del" | "not" | "and" | "or" |
-        "is" | "None" | "True" | "False" | "in" | "raise" | "yield" | "from" | "import" | "as" | "with" |
+        "is" | "None" | "True" | "False" | "raise" |
         // C/C++ common
-        "int" | "char" | "float" | "double" | "struct" | "union" | "typedef" | "sizeof" | "goto" | "inline" |
-        "signed" | "unsigned" | "short" | "long" | "volatile" | "extern" |
+        "int" | "char" | "float" | "double" | "union" | "typedef" | "sizeof" | "goto" | "inline" |
+        "signed" | "unsigned" | "short" | "long" | "volatile" |
         // Java / C# common
-        "package" | "throws" | "boolean" | "byte" | "short" | "long" | "native" | "synchronized" | "strictfp" |
-        "transient" | "readonly" | "virtual" | "sealed" | "foreach" |
-        // More C#
-        "namespace" | "using" | "internal" | "dynamic" | "base" | "operator" | "explicit" | "implicit" | "event" |
+        "package" | "throws" | "boolean" | "byte" | "native" | "synchronized" | "strictfp" |
+        "transient" | "virtual" | "sealed" | "foreach" | "void_type" |
+
+        "keyword_select" | "keyword_from" | "keyword_where" | "keyword_group" | "keyword_having" | "keyword_order" | "keyword_by" | "keyword_into" | "keyword_create" |
+        "keyword_database" | "keyword_alter" | "keyword_drop" | "keyword_delete" | "keyword_insert" | "keyword_update" |
+
+        "using" | "internal" | "dynamic" | "base" | "operator" | "explicit" | "implicit" | "event" |
         "lock" | "fixed" => true,
         _ => false,
     }
