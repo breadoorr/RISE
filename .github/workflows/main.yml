@@ -58,6 +58,8 @@ jobs:
           git push origin release --force
 
   publish-tauri:
+    name: Publish Release
+    needs: test-compatibility
     permissions:
       contents: write
     strategy:
