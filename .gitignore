@@ -9,3 +9,6 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vscode
 .idea
+/build
+/build
+/build

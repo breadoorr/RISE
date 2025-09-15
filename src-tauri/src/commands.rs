@@ -4,17 +4,11 @@ use std::path::Path;
 use serde::Serialize;
 use hostname;
 use std::process::Command;
-use tree_sitter::{Parser, Tree};
 use lazy_static::lazy_static;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use crate::highlight::{get_language_object, collect, escape_html, calculate_edit};
-
-lazy_static! {
-    static ref PARSERS: Mutex<HashMap<String, Parser>> = Mutex::new(HashMap::new());
-    static ref TREES: Mutex<HashMap<String, Tree>> = Mutex::new(HashMap::new());
-    static ref FILE_CONTENTS: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
-}
+use streaming_iterator::StreamingIterator;
+use crate::highlight::{escape_html, calculate_edit, highlight_ast};
 
 #[derive(Clone, Debug)]
 struct EditEntry {
@@ -22,120 +16,13 @@ struct EditEntry {
 }
 
 #[derive(Clone, Debug)]
-struct EditorBuffer {
-    content: String,
+pub struct EditorBuffer {
+    pub(crate) content: String,
     undo_stack: Vec<EditEntry>,
 }
 
 lazy_static! {
-    static ref EDITOR_BUFFERS: Mutex<HashMap<String, EditorBuffer>> = Mutex::new(HashMap::new());
-}
-
-#[derive(Serialize)]
-pub struct HighlightResult {
-    pub html: String,
-}
-
-#[tauri::command]
-pub fn highlight_ast(code: String, language: String, path: String) -> Result<Vec<(usize, usize, String)>, String> {
-    let mut parsers = PARSERS.lock().unwrap();
-    let mut trees = TREES.lock().unwrap();
-    let mut file_contents = FILE_CONTENTS.lock().unwrap();
-
-    if !parsers.contains_key(&language) {
-        let mut parser = Parser::new();
-        let lang = get_language_object(&language);
-        parser.set_language(&lang).map_err(|e| e.to_string())?;
-        parsers.insert(language.clone(), parser);
-    }
-
-    let old_code = file_contents.get(&path).cloned().unwrap_or_default();
-
-    if let Some(tree) = trees.get_mut(&path) {
-        if let Some(edit) = calculate_edit(&old_code, &code) {
-            tree.edit(&edit);
-        }
-    }
-
-    let parser = parsers.get_mut(&language).unwrap();
-    let old_tree_ref = trees.get(&path);
-    let new_tree = parser.parse(&code, old_tree_ref);
-
-    if let Some(tree) = new_tree {
-        let mut results = Vec::with_capacity(code.len() / 8);
-        collect(tree.root_node(), &code, &mut results);
-        trees.insert(path.clone(), tree);
-        file_contents.insert(path.clone(), code);
-        Ok(results)
-    } else {
-        Ok(vec![])
-    }
-}
-
-#[tauri::command]
-pub fn highlight_html(
-    code: String,
-    language: String,
-    matches: Vec<usize>,
-    query_len: usize,
-    path: String,
-) -> String {
-    if code.is_empty() {
-        return String::new();
-    }
-    if code.len() > 500_000 {
-        return escape_html(&code).replace("\n\n", "\n<span class=\"empty-line\"> </span>\n");
-    }
-
-    let spans = match highlight_ast(code.clone(), language, path) {
-        Ok(spans) => spans,
-        Err(_) => return escape_html(&code).replace("\n\n", "\n<span class=\"empty-line\"> </span>\n"),
-    };
-
-    let mut html = String::with_capacity(code.len() * 2);
-    let mut last_index: usize = 0;
-
-    let match_set: HashSet<(usize, usize)> = if query_len > 0 {
-        matches.into_iter().map(|m| (m, m + query_len)).collect()
-    } else {
-        HashSet::new()
-    };
-
-    let mut spans_sorted = spans;
-    spans_sorted.sort_by_key(|(s, _e, _k)| *s);
-
-    for (start, end, kind) in spans_sorted.into_iter() {
-        if start > last_index {
-            let plain = &code[last_index..start];
-            html.push_str(&escape_html(plain));
-        }
-        if end <= code.len() && start < end {
-            let raw = &code[start..end];
-            let escaped = escape_html(raw);
-            let is_match = match_set.contains(&(start, end));
-            let color_opt = color_for_kind(&kind);
-            if let Some(color) = color_opt {
-                if is_match {
-                    html.push_str(&format!("<span class=\"token find-match\" style=\"color:{}\">{}</span>", color, escaped));
-                } else {
-                    html.push_str(&format!("<span class=\"token\" style=\"color:{}\">{}</span>", color, escaped));
-                }
-            } else {
-                if is_match {
-                    html.push_str(&format!("<span class=\"token find-match\">{}</span>", escaped));
-                } else {
-                    html.push_str(&format!("<span class=\"token\">{}</span>", escaped));
-                }
-            }
-        }
-        last_index = end.min(code.len());
-    }
-
-    if last_index < code.len() {
-        html.push_str(&escape_html(&code[last_index..]));
-    }
-
-    html.replace("\n\n", "\n<span class=\"empty-line\"> </span>\n")
+    pub static ref EDITOR_BUFFERS: Mutex<HashMap<String, EditorBuffer>> = Mutex::new(HashMap::new());
 }
 
 #[derive(Serialize)]
@@ -349,6 +236,23 @@ pub async fn is_directory(path: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub async fn get_line_count(path: String) -> Result<usize, String> {
+    let mut map = EDITOR_BUFFERS.lock().map_err(|_| "lock poisoned".to_string())?;
+    let content = if let Some(buf) = map.get(&path) {
+        buf.content.clone()
+    } else {
+        drop(map);
+        fs::read_to_string(&path).unwrap_or_default()
+    };
+    let count = if content.is_empty() {
+        1
+    } else {
+        content.as_bytes().iter().filter(|&&b| b == b'\n').count() + 1
+    };
+    Ok(count)
+}
+
+#[tauri::command]
 pub async fn change_directory(cwd: String, target: String) -> Result<String, String> {
     // Resolve new working directory on the backend for cross-platform correctness
     let home = env::var("HOME").or_else(|_| env::var("USERPROFILE")).unwrap_or_else(|_| cwd.clone());
@@ -499,56 +403,5 @@ pub fn get_default_shell() -> Result<String, String> {
     {
         // Requirement: on Linux default is bash
         return Ok("bash".to_string());
-    }
-}
-
-
-// Mapping from token kind to color for inline styling
-fn color_for_kind(kind: &str) -> Option<&'static str> {
-    match kind {
-        // Comments
-        "comment" | "line_comment" | "block_comment" => Some("#7f848e"),
-        // Strings (various languages)
-        "string_literal" | "template_string" | "raw_string_literal" | "interpreted_string_literal" | "char_literal" | "string_fragment" | "string_content" => Some("#54790d"),
-        // Numbers
-        "number" | "integer" | "float" | "number_literal" | "float_literal" | "decimal_integer_literal" | "integer_literal" => Some("#d19a66"),
-        // Regex
-        "regex" => Some("#e06c75"),
-        // Types (where available)
-        "type_identifier" | "type" | "primitive_type" => Some("#56b6c2"),
-        _ => {
-            if is_keyword(kind) { Some("#c678dd") } else { None }
-        }
-    }
-}
-
-fn is_keyword(kind: &str) -> bool {
-    match kind {
-        // Common JS/TS
-        "function" | "return" | "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default" |
-        "break" | "continue" | "const" | "let" | "var" | "class" | "extends" | "new" | "try" | "catch" |
-        "finally" | "throw" | "import" | "from" | "export" | "as" | "in" | "of" | "instanceof" | "typeof" |
-        "delete" | "void" | "yield" | "await" | "with" | "interface" | "enum" | "implements" | "readonly" |
-        "declare" | "namespace" | "public" | "private" | "protected" | "abstract" | "override" | "static" |
-        "get" | "set" | "this" | "super" | "true" | "false" | "null" | "undefined" | "debugger" |
-        // Rust
-        "fn" | "mutable_specifier" | "pub" | "struct" | "impl" | "trait" | "where" | "use" | "mod" | "crate" |
-        "self" | "Self" | "match" | "loop" | "move" | "async" | "unsafe" | "extern" | "ref" | "type" |
-        // Python
-        "def" | "elif" | "lambda" | "global" | "nonlocal" | "pass" | "assert" | "del" | "not" | "and" | "or" |
-        "is" | "None" | "True" | "False" | "raise" |
-        // C/C++ common
-        "int" | "char" | "float" | "double" | "union" | "typedef" | "sizeof" | "goto" | "inline" |
-        "signed" | "unsigned" | "short" | "long" | "volatile" |
-        // Java / C# common
-        "package" | "throws" | "boolean" | "byte" | "native" | "synchronized" | "strictfp" |
-        "transient" | "virtual" | "sealed" | "foreach" | "void_type" |
-
-        "keyword_select" | "keyword_from" | "keyword_where" | "keyword_group" | "keyword_having" | "keyword_order" | "keyword_by" | "keyword_into" | "keyword_create" |
-        "keyword_database" | "keyword_alter" | "keyword_drop" | "keyword_delete" | "keyword_insert" | "keyword_update" |
-
-        "using" | "internal" | "dynamic" | "base" | "operator" | "explicit" | "implicit" | "event" |
-        "lock" | "fixed" => true,
-        _ => false,
     }
 }
