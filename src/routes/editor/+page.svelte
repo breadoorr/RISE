@@ -9,6 +9,8 @@
         Folder,
         Terminal as TerminalIcon,
     } from "lucide-svelte";
+    import FileMenu from "./FileMenu.svelte";
+    import toggleFileMenu from './FileMenu.svelte';
 
     interface FileEntry {
         path: string;
@@ -44,6 +46,8 @@
     let activeFileIndex: number = -1;
     let isSidebarOpen: boolean = true;
     let isTerminalOpen: boolean = false;
+    let actions: Array<string> = [];
+    let fileMenu;
 
     // user/system info
     let user: string = '';
@@ -185,6 +189,7 @@
     async function selectFile(item: FileEntry, event: MouseEvent) {
         event.preventDefault();
         if (event.button === 0) {
+            event.preventDefault();
             if (item.is_dir) {
                 item.expanded = !item.expanded;
                 if (item.expanded && (!item.children || item.children.length === 0)) {
@@ -207,6 +212,11 @@
                 activeFileIndex = openFiles.length - 1;
                 await switchToFile(activeFileIndex);
             }
+        } else if (event.button === 2) {
+            event.preventDefault();
+            actions = await invoke('get_actions', { isDir: item.is_dir });
+            fileMenu.toggleFileMenu(event, actions);
+            console.log(actions);
         }
     }
 
@@ -454,6 +464,7 @@
 </script>
 
 <main>
+    <FileMenu bind:this={fileMenu} />
     <div class="sidebar--tools">
         <button class="sidebar--tools-item" class:active={isSidebarOpen} on:click={() => {
             sidebarWidth = isSidebarOpen ? 0 : 300;

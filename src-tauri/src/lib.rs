@@ -1,6 +1,7 @@
 mod commands;
 mod highlight;
 mod theme;
+mod actions;
 
 pub use commands::{
     create_project,
@@ -24,6 +25,8 @@ pub use commands::{
 
 pub use highlight::highlight_html;
 
+pub use actions::get_actions;
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -45,6 +48,7 @@ pub fn run() {
             apply_edit,
             apply_full_update,
             undo_last_change,
+            get_actions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
