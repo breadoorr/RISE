@@ -25,7 +25,10 @@ pub use commands::{
 
 pub use highlight::highlight_html;
 
-pub use actions::get_actions;
+pub use actions::{
+    get_actions,
+    perform_action
+};
 
 pub fn run() {
     tauri::Builder::default()
@@ -49,6 +52,7 @@ pub fn run() {
             apply_full_update,
             undo_last_change,
             get_actions,
+            perform_action,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
