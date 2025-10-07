@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::Path;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use hostname;
 use std::process::Command;
 use lazy_static::lazy_static;
@@ -25,7 +25,7 @@ lazy_static! {
     pub static ref EDITOR_BUFFERS: Mutex<HashMap<String, EditorBuffer>> = Mutex::new(HashMap::new());
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct FileEntry {
     pub path: String,
     pub name: String,

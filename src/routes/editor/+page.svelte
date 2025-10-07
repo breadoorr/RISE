@@ -8,7 +8,6 @@
     import {fileStore, refreshPathInStore} from '$lib/stores/fileStore';
     import { selectFile as selectFileInStore } from '$lib/stores/fileStore';
     import { loadFiles as loadFilesUtil, updateAllFiles as flattenFilesUtil } from '$lib/utils/fileLoader';
-    import FileMenu from "./components/FileMenu.svelte";
 
     let projectPath: string | null = null;
     let currentPath: string | null = null;
@@ -263,8 +262,6 @@
 </script>
 
 <main>
-    <FileMenu bind:toggleFileMenu />
-
     <Sidebar
         bind:files={files}
         bind:allFiles={allFiles}
@@ -281,7 +278,6 @@
         }}
         on:toggleTerminal={() => toggleTerminal()}
         on:openFile={(e) => openFileFromSidebar(e.detail.file)}
-        on:contextMenu={(e) => toggleFileMenu(e.detail.mouseEvent, true, e.detail.isDir, e.detail.path, currentPath)}
         on:filesChanged={() => {
             fileStore.update((state) => ({
                 ...state,
@@ -290,6 +286,7 @@
             }));
         }}
         on:resize={(e) => { sidebarWidth = e.detail.width; }}
+        bind:toggleFileMenu
     />
 
     <Editor
