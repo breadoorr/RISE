@@ -33,7 +33,7 @@ export async function loadFilesIntoStore(projectPath: string | null) {
         // Normalize children
         for (const f of children) {
             f.level = 1;
-            f.parent_dir = projectPath.split('/').pop() || '';
+            f.parent_dir = projectPath || '';
             if (f.is_dir) {
                 f.expanded = f.expanded ?? false;
                 f.children = f.children ?? [];
@@ -85,9 +85,8 @@ export async function refreshPathInStore(path: string) {
     try {
         const newChildren: FileEntry[] = await invoke('list_files', { dirPath: effectiveDir });
         for (const f of newChildren) {
-            const level = effectiveDir === currentProjectPath ? 1 : (targetNode?.level ?? 0) + 1;
-            f.level = level;
-            f.parent_dir = effectiveDir.split('/').pop() || '';
+            f.level = effectiveDir === currentProjectPath ? 1 : (targetNode?.level ?? 0) + 1;
+            f.parent_dir = effectiveDir|| '';
             if (f.is_dir) {
                 f.expanded = f.expanded ?? false;
                 f.children = f.children ?? [];

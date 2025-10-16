@@ -52,25 +52,16 @@
 }
 
 .file-list {
-  display: block;
-  height: 100vh;
-
-  overflow-y: hidden;
-
-  &::-webkit-scrollbar {
-    display: none;
-  }
-}
-
-.file-list {
   overflow-y: scroll;
-  margin: 3px;
+  overflow-x: scroll;
+  height: 100vh;
+  display: block;
+
+
 
   &-item {
     cursor: pointer;
-    border-radius: 3px;
     border: none;
-    margin-bottom: 0.25rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -78,11 +69,28 @@
     align-items: center;
     transition: background-color 0.2s ease;
     width: 100%;
-    min-width: 100px;
+    min-width: 200px;
     background-color: var(--secondary-200);
     font-size: 0.9rem;
     user-select: none;
     color: var(--text-800);
+    height: 30px;
+
+    &.editing {
+      padding: 0;
+      height: 35px;
+      font-size: 1rem;
+    }
+
+    &--input {
+      background: transparent;
+      border: none;
+      padding: 2px;
+      color: var(--text-900);
+      font-size: 0.8rem;
+      height: 18px;
+      outline-color: var(--secondary-200);
+    }
 
     &.selected {
       background-color: var(--accent-300);
@@ -95,7 +103,7 @@
 .file-list ul {
   list-style: none;
   padding-left: 0;
-  margin-bottom: 50px;
+  margin: 0;
   user-select: none;
 }
 
@@ -105,4 +113,12 @@
   min-width: 1.5rem;
   text-align: center;
   user-select: none;
+}
+
+.error-message {
+  background: var(--background-100);
+  padding: 5px;
+  border-radius: 10px;
+  color: #d83f3f;
+  font-size: 0.8rem;
 }

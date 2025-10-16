@@ -56,14 +56,18 @@ impl From<Actions> for String {
     }
 }
 
-const ACTIONS: [Actions; 11] = [
+const FILE_ACTIONS: [Actions; 5] = [
     Actions::RenameFile,
     Actions::DeleteFile,
     Actions::CopyFile,
     Actions::MoveFile,
     Actions::CopyFilePath,
+];
+
+const FOLDER_ACTIONS: [Actions; 7] = [
     Actions::CreateNewFile,
     Actions::CreateNewFolder,
+    Actions::RenameFolder,
     Actions::DeleteFolder,
     Actions::CopyFolder,
     Actions::MoveFolder,
@@ -73,14 +77,14 @@ const ACTIONS: [Actions; 11] = [
 #[tauri::command]
 pub fn get_actions(is_dir: bool) -> Vec<String> {
     if is_dir {
-        return ACTIONS.map(|x| x.into()).into();
+        return FOLDER_ACTIONS.map(|x| x.into()).into();
     }
 
-    ACTIONS.map(|x| x.into()).into()
+    FILE_ACTIONS.map(|x| x.into()).into()
 }
 
 #[tauri::command]
-pub fn perform_action(file: FileEntry, action: String) {
+pub fn perform_action(file: FileEntry, action: String, new_name: String) {
     println!(
         "Performing action: {} on path: {}, type: {}",
         action, file.path, file.is_dir
@@ -105,13 +109,17 @@ pub fn perform_action(file: FileEntry, action: String) {
             // copy(&file.path);
         }
         Actions::MoveFolder => {
-            move_folder(&file.path);
+            if !new_name.is_empty() {
+                move_folder(&file.path, &new_name);
+            }
         }
         Actions::CopyFolderPath => {
             copy_path(&file.path);
         }
         Actions::RenameFolder => {
-            rename(&file.path);
+            if !new_name.is_empty() {
+                rename(&file.path, &new_name);
+            }
         }
         Actions::DeleteFile => {
             delete_file(&file.path);
@@ -120,13 +128,17 @@ pub fn perform_action(file: FileEntry, action: String) {
             // copy(&file.path);
         }
         Actions::MoveFile => {
-            move_file(&file.path);
+            if !new_name.is_empty() {
+                move_file(&file.path, &new_name);
+            }
         }
         Actions::CopyFilePath => {
             copy_path(&file.path);
         }
         Actions::RenameFile => {
-            rename(&file.path);
+            if !new_name.is_empty() {
+                rename(&file.path, &new_name);
+            }
         }
     }
 }
@@ -170,10 +182,27 @@ fn copy(path: &String) {
         .expect("Failed to copy file");
 }
 
-fn move_file(path: &String) {}
+fn move_file(path: &String, n_path: &String) {
+    fs::rename(path, n_path)
+        .map_err(|e| format!("Failed to rename file: {}", e))
+        .expect("Failed to rename file");
+    println!("Renamed file: {} to {}", path, n_path);
+}
 
-fn move_folder(path: &String) {}
+fn move_folder(path: &String, n_path: &String) {
+    fs::rename(path, n_path)
+        .map_err(|e| format!("Failed to rename file: {}", e))
+        .expect("Failed to rename file");
+    println!("Renamed folder: {} to {}", path, n_path);
+}
 
 fn copy_path(path: &String) {}
 
-fn rename(path: &String) {}
+fn rename(path: &String, n_path: &String) {
+    // let path = Path::new(path);
+    // let new_path = Path::new(n_path);
+    fs::rename(path, n_path)
+        .map_err(|e| format!("Failed to rename file: {}", e))
+        .expect("Failed to rename file");
+    println!("Renamed file: {} to {}", path, n_path);
+}
