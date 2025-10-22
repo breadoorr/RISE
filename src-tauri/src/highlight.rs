@@ -149,6 +149,24 @@ pub fn find_matches<'a>(code: String, matches: &mut QueryMatches<&'a[u8], &'a[u8
     }
 }
 
+fn normalize_spans(mut spans: Vec<(usize, usize, String)>) -> Vec<(usize, usize, String)> {
+    if spans.is_empty() { return spans; }
+    spans.sort_by(|a, b| {
+        if a.0 != b.0 { a.0.cmp(&b.0) } else { b.1.cmp(&a.1) }
+    });
+    let mut result: Vec<(usize, usize, String)> = Vec::with_capacity(spans.len());
+    let mut current_end: usize = 0;
+    for (s, e, k) in spans.into_iter() {
+        if e <= s { continue; }
+        if e <= current_end { continue; }
+        let start = s.max(current_end);
+        if start >= e { continue; }
+        result.push((start, e, k));
+        current_end = e;
+    }
+    result
+}
+
 #[tauri::command]
 pub fn highlight_ast(code: String, language: String, path: String) -> Result<Vec<(usize, usize, String)>, String> {
     let mut parsers = PARSERS.lock().unwrap();
@@ -197,6 +215,7 @@ pub fn highlight_ast(code: String, language: String, path: String) -> Result<Vec
             let mut matches = cursor.matches(&query, tree.root_node(), code.as_bytes());
             find_matches(code.clone(), &mut matches, query, &mut seen, &mut final_spans);
             final_spans.sort_by_key(|(s, _e, _k)| *s);
+            final_spans = normalize_spans(final_spans);
             spans_cache.insert(path.clone(), final_spans.clone());
         } else {
             // Incremental path
@@ -235,20 +254,10 @@ pub fn highlight_ast(code: String, language: String, path: String) -> Result<Vec
             merged.extend(new_region_spans.into_iter());
             merged.sort_by_key(|(s, _e, _k)| *s);
 
-            // Optional: de-duplicate exact duplicates
-            let mut deduped: Vec<(usize, usize, String)> = Vec::with_capacity(merged.len());
-            let mut last: Option<(usize, usize, String)> = None;
-            for (s, e, k) in merged.into_iter() {
-                if let Some((ps, pe, ref pk)) = last {
-                    if ps == s && pe == e && pk == &k {
-                        continue;
-                    }
-                }
-                last = Some((s, e, k.clone()));
-                deduped.push((s, e, k));
-            }
-            spans_cache.insert(path.clone(), deduped.clone());
-            final_spans = deduped;
+            // Normalize to avoid overlaps and duplicates
+            let normalized = normalize_spans(merged);
+            spans_cache.insert(path.clone(), normalized.clone());
+            final_spans = normalized;
         }
 
         trees.insert(path.clone(), tree);
@@ -308,23 +317,26 @@ pub fn highlight_html(
             html.push_str(&escape_html(plain));
         }
         if end <= code.len() && start < end {
-            let raw = &code[start..end];
-            let escaped = escape_html(raw);
-            let is_match = match_set.contains(&(start, end));
-            let style_opt = crate::theme::get_style_for_kind(&kind);
-            if let Some(style) = style_opt {
-                if is_match {
-                    // html.push_str(&format!("<span class=\"token find-match\" style=\"{}\">{}</span>", style, escaped));
+            let s = start.max(last_index);
+            if s < end {
+                let raw = &code[s..end];
+                let escaped = escape_html(raw);
+                let is_match = match_set.contains(&(start, end));
+                let style_opt = crate::theme::get_style_for_kind(&kind);
+                if let Some(style) = style_opt {
+                    if is_match {
+                        // html.push_str(&format!("<span class=\"token find-match\" style=\"{}\">{}</span>", style, escaped));
+                    } else {
+                        html.push_str(&format!("<span class=\"token\" style=\"{}\">{}</span>", style, escaped));
+                        // html.push_str(&escaped);
+                    }
                 } else {
-                    html.push_str(&format!("<span class=\"token\" style=\"{}\">{}</span>", style, escaped));
-                    // html.push_str(&escaped);
-                }
-            } else {
-                if is_match {
-                    html.push_str(&format!("<span class=\"token find-match\">{}</span>", escaped));
-                } else {
-                    // No style and not a match: emit plain text to reduce unnecessary spans
-                    html.push_str(&escaped);
+                    if is_match {
+                        html.push_str(&format!("<span class=\"token find-match\">{}</span>", escaped));
+                    } else {
+                        // No style and not a match: emit plain text to reduce unnecessary spans
+                        html.push_str(&escaped);
+                    }
                 }
             }
         }

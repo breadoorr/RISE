@@ -403,7 +403,7 @@
             </div>
         </div>
     </div>
-    <div class="terminal-panes" style="height: {terminalHeight}px">
+    <div class="terminal-panes" style="height: calc({terminalHeight}px - 5%)">
         {#each terminalTabs as t (t.id)}
             <div class="terminal-pane" style="display: {t.id === activeTerminalTabId ? 'block' : 'none'};">
                 <div class="terminal" id={"term-" + t.id} bind:this={t.element}></div>
@@ -413,5 +413,5 @@
 </div>
 
 <style lang="scss">
-  @use 'terminal';
+  @use '../style/terminal';
 </style>
