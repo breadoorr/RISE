@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/tauri";
+import { invoke } from "@tauri-apps/api/core";
 import type { FileEntry } from "./types";
 
 // Pure helper to load directory contents and normalize fields without holding module state

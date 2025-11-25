@@ -405,3 +405,358 @@ pub fn get_default_shell() -> Result<String, String> {
         return Ok("bash".to_string());
     }
 }
+
+
+#[derive(Serialize)]
+pub struct KeyEventResult {
+    pub content: String,
+    pub selection_start: usize,
+    pub selection_end: usize,
+}
+
+fn detect_language_from_filename(path: &str) -> &'static str {
+    let p = path.to_lowercase();
+    if p.ends_with(".rs") { "rust" }
+    else if p.ends_with(".py") { "python" }
+    else if p.ends_with(".c") || p.ends_with(".h") { "c" }
+    else if p.ends_with(".java") { "java" }
+    else if p.ends_with(".cs") { "c_sharp" }
+    else if p.ends_with(".sql") { "sequel" }
+    else if p.ends_with(".ts") || p.ends_with(".tsx") || p.ends_with(".js") || p.ends_with(".jsx") { "typescript" }
+    else { "typescript" }
+}
+
+fn line_comment_for_language(lang: &str) -> &'static str {
+    match lang {
+        "python" => "#",
+        "sequel" => "--",
+        _ => "//",
+    }
+}
+
+fn clamp_index(s: &str, idx: usize) -> usize {
+    idx.min(s.len())
+}
+
+fn line_start_at(s: &str, mut idx: usize) -> usize {
+    let bytes = s.as_bytes();
+    if idx > bytes.len() { idx = bytes.len(); }
+    while idx > 0 {
+        if bytes[idx - 1] == b'\n' { break; }
+        idx -= 1;
+    }
+    idx
+}
+
+fn line_end_at(s: &str, mut idx: usize) -> usize {
+    let bytes = s.as_bytes();
+    if idx > bytes.len() { idx = bytes.len(); }
+    while idx < bytes.len() {
+        if bytes[idx] == b'\n' { break; }
+        idx += 1;
+    }
+    idx
+}
+
+fn prev_non_ws_char_before(s: &str, idx: usize) -> Option<char> {
+    let mut i = idx.min(s.len());
+    while i > 0 {
+        let ch = s[..i].chars().rev().next()?; // expensive but fine for small spans
+        let ch_len = ch.len_utf8();
+        i -= ch_len;
+        if ch.is_ascii() { return Some(ch); }
+    }
+    None
+}
+
+fn whitespace_prefix_at(s: &str, line_start: usize) -> String {
+    let mut out = String::new();
+    let mut i = line_start;
+    let bytes = s.as_bytes();
+    while i < s.len() {
+        let b = bytes[i];
+        if b == b' ' { out.push(' '); i += 1; }
+        else if b == b'\t' { out.push('\t'); i += 1; }
+        else { break; }
+    }
+    out
+}
+
+fn apply_with_undo(path: &str, new_content: String) -> Result<String, String> {
+    let mut map = EDITOR_BUFFERS.lock().unwrap();
+    let buf = map.entry(path.to_string()).or_insert(EditorBuffer { content: String::new(), undo_stack: Vec::new() });
+    let entry = EditEntry { prev_content: buf.content.clone() };
+    if buf.undo_stack.len() >= 50 { buf.undo_stack.remove(0); }
+    buf.undo_stack.push(entry);
+    buf.content = new_content;
+    Ok(buf.content.clone())
+}
+
+#[tauri::command]
+pub async fn process_key_event(
+    path: String,
+    key: String,
+    selection_start: usize,
+    selection_end: usize,
+    shift: bool,
+    ctrl: bool,
+    meta: bool,
+    _alt: bool,
+) -> Result<KeyEventResult, String> {
+    // get current content
+    let mut map = EDITOR_BUFFERS.lock().unwrap();
+    let buf = map.entry(path.clone()).or_insert(EditorBuffer { content: String::new(), undo_stack: Vec::new() });
+    let content = buf.content.clone();
+    drop(map);
+
+    let mut start = clamp_index(&content, selection_start);
+    let mut end = clamp_index(&content, selection_end);
+    if start > end { std::mem::swap(&mut start, &mut end); }
+
+    let lang = detect_language_from_filename(&path);
+    let indent_unit = "    ";
+
+    let mut new_content = content.clone();
+    let mut new_sel_start = start;
+    let mut new_sel_end = end;
+
+    let handled = if key == "Tab" && !shift {
+        if start == end {
+            // insert indent at caret
+            new_content = format!("{}{}{}", &content[..start], indent_unit, &content[start..]);
+            new_sel_start = start + indent_unit.len();
+            new_sel_end = new_sel_start;
+        } else {
+            // indent all selected lines
+            let ls = line_start_at(&content, start);
+            let le = line_end_at(&content, end);
+            let mut out = String::with_capacity(content.len() + 8);
+            out.push_str(&content[..ls]);
+            let mut i = ls;
+            let mut first_line = true;
+            let mut added_lines = 0usize;
+            while i < le {
+                out.push_str(indent_unit);
+                added_lines += 1;
+                let next_nl = {
+                    let mut j = i;
+                    while j < content.len() && content.as_bytes()[j] != b'\n' { j += 1; }
+                    j
+                };
+                out.push_str(&content[i..next_nl]);
+                if next_nl < content.len() && content.as_bytes()[next_nl] == b'\n' {
+                    out.push('\n');
+                    i = next_nl + 1;
+                } else {
+                    i = next_nl;
+                }
+                if first_line { first_line = false; }
+            }
+            out.push_str(&content[le..]);
+            new_content = out;
+            new_sel_start = start + indent_unit.len();
+            new_sel_end = end + indent_unit.len() * added_lines;
+        }
+        true
+    } else if key == "Tab" && shift {
+        // outdent selected lines
+        let ls = line_start_at(&content, start);
+        let le = line_end_at(&content, end);
+        let mut out = String::with_capacity(content.len());
+        out.push_str(&content[..ls]);
+        let mut i = ls;
+        let mut changed_lines = 0usize;
+        let mut removed_sum = 0usize;
+        while i < le {
+            // remove up to 4 leading spaces or one tab
+            let mut j = i;
+            let mut removed = 0usize;
+            while j < content.len() && removed < 4 {
+                let b = content.as_bytes()[j];
+                if b == b' ' { j += 1; removed += 1; }
+                else if b == b'\t' { j += 1; removed = 1; break; }
+                else { break; }
+            }
+            out.push_str(&content[j..{
+                let mut k = j;
+                while k < content.len() && content.as_bytes()[k] != b'\n' { k += 1; }
+                k
+            }]);
+            let line_end = {
+                let mut k = j;
+                while k < content.len() && content.as_bytes()[k] != b'\n' { k += 1; }
+                k
+            };
+            if line_end < content.len() && content.as_bytes()[line_end] == b'\n' {
+                // out.push('\n');
+            }
+            if removed > 0 { changed_lines += 1; removed_sum += removed; }
+            i = if line_end < content.len() { line_end + 1 } else { line_end };
+        }
+        out.push_str(&content[le..]);
+        new_content = out;
+        // Adjust selection: start moves back by removed on first line if caret after removal point
+        let first_line_removed = {
+            let mut r = 0usize;
+            let mut j = ls; let mut removed = 0usize;
+            while j < content.len() && removed < 4 {
+                let b = content.as_bytes()[j];
+                if b == b' ' { j += 1; removed += 1; }
+                else if b == b'\t' { j += 1; removed = 1; break; }
+                else { break; }
+            }
+            r = removed;
+            r
+        };
+        new_sel_start = start.saturating_sub(first_line_removed);
+        // total removed across all lines in selection
+        new_sel_end = end.saturating_sub(removed_sum);
+        true
+    } else if key == "(" || key == "{" || key == "[" {
+        // auto insert matching closing bracket, but don't be persistent if user deletes it
+        let (open, close) = match key.as_str() {
+            "(" => ('(', ')'),
+            "{" => ('{', '}'),
+            "[" => ('[', ']'),
+            _ => (' ', ' '),
+        };
+        let next_ch_opt = content[end..].chars().next();
+        if start == end {
+            // no selection
+            if let Some(nc) = next_ch_opt {
+                if nc == close {
+                    // If the next char is already the expected closing, just insert the opening and move caret
+                    new_content = format!("{}{}{}", &content[..start], open, &content[end..]);
+                    new_sel_start = start + open.len_utf8();
+                    new_sel_end = new_sel_start;
+                    true
+                } else {
+                    // Insert pair and place caret between them
+                    new_content = format!("{}{}{}{}", &content[..start], open, close, &content[end..]);
+                    new_sel_start = start + open.len_utf8();
+                    new_sel_end = new_sel_start;
+                    true
+                }
+            } else {
+                // end of file, just insert pair
+                new_content = format!("{}{}{}{}", &content[..start], open, close, &content[end..]);
+                new_sel_start = start + open.len_utf8();
+                new_sel_end = new_sel_start;
+                true
+            }
+        } else {
+            // wrap selection with pair; keep selection inside the brackets
+            new_content = format!("{}{}{}{}{}", &content[..start], open, &content[start..end], close, &content[end..]);
+            new_sel_start = start + open.len_utf8();
+            new_sel_end = end + open.len_utf8();
+            true
+        }
+    } else if key == "Enter" {
+        // auto-indent
+        let ls = line_start_at(&content, start);
+        let prefix = whitespace_prefix_at(&content, ls);
+        let mut add_indent = false;
+        if let Some(ch) = prev_non_ws_char_before(&content, start) {
+            if matches!(lang, "rust" | "typescript" | "c" | "java" | "c_sharp") && ch == '{' { add_indent = true; }
+            if lang == "python" && ch == ':' { add_indent = true; }
+        }
+        let mut insert = String::from("\n");
+        insert.push_str(&prefix);
+        if add_indent { insert.push_str(indent_unit); }
+        new_content = format!("{}{}{}", &content[..start], insert, &content[end..]);
+        new_sel_start = start + insert.len();
+        new_sel_end = new_sel_start;
+        true
+    } else if (ctrl || meta) && key == "/" {
+        // toggle comment on selected lines
+        let token = line_comment_for_language(lang);
+        let ls = line_start_at(&content, start);
+        let le = line_end_at(&content, end);
+        // Detect if all selected lines already commented
+        let mut i = ls;
+        let bytes = content.as_bytes();
+        let mut all_commented = true;
+        while i < le {
+            // skip leading whitespace
+            let mut j = i;
+            while j < content.len() && (bytes[j] == b' ' || bytes[j] == b'\t') { j += 1; }
+            if content[j..].starts_with(token) {
+                // ok
+            } else {
+                all_commented = false;
+                break;
+            }
+            // move to next line
+            while j < content.len() && bytes[j] != b'\n' { j += 1; }
+            // i = if j < content.len() { j + 1 } else { j };
+        }
+        // Build output
+        let mut out = String::with_capacity(content.len() + 8);
+        out.push_str(&content[..ls]);
+        i = ls;
+        let mut delta: isize = 0;
+        while i < le {
+            // find line leading whitespace
+            let mut j = i;
+            while j < content.len() && (bytes[j] == b' ' || bytes[j] == b'\t') { j += 1; }
+            if all_commented {
+                // remove one token instance
+                if content[j..].starts_with(token) {
+                    out.push_str(&content[i..j]);
+                    out.push_str(&content[(j + token.len())..{
+                        let mut k = j + token.len();
+                        while k < content.len() && bytes[k] != b'\n' { k += 1; }
+                        k
+                    }]);
+                    delta -= token.len() as isize;
+                } else {
+                    out.push_str(&content[i..{
+                        let mut k = i;
+                        while k < content.len() && bytes[k] != b'\n' { k += 1; }
+                        k
+                    }]);
+                }
+            } else {
+                // insert token after leading whitespace
+                out.push_str(&content[i..j]);
+                out.push_str(token);
+                out.push_str(&content[j..{
+                    let mut k = j;
+                    while k < content.len() && bytes[k] != b'\n' { k += 1; }
+                    k
+                }]);
+                delta += token.len() as isize;
+            }
+            // copy newline if present
+            let mut line_end = j;
+            while line_end < content.len() && bytes[line_end] != b'\n' { line_end += 1; }
+            // if line_end < content.len() && bytes[line_end] == b'\n' { out.push('\n'); }
+            i = if line_end < content.len() { line_end + 1 } else { line_end };
+        }
+        out.push_str(&content[le..]);
+        new_content = out;
+        if all_commented {
+            // selection shrinks
+            new_sel_start = start.saturating_sub(token.len());
+            new_sel_end = (end as isize + delta) as usize;
+        } else {
+            new_sel_start = start + token.len();
+            new_sel_end = (end as isize + delta) as usize;
+        }
+        true
+    } else if key == "Backspace" {
+
+        //TODO
+        false
+    } else {
+        false
+    };
+
+    if handled {
+        let updated = apply_with_undo(&path, new_content)?;
+        Ok(KeyEventResult { content: updated, selection_start: new_sel_start, selection_end: new_sel_end })
+    } else {
+        // return unchanged
+        Ok(KeyEventResult { content, selection_start: start, selection_end: end })
+    }
+}

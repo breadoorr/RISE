@@ -1,13 +1,31 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { invoke } from "@tauri-apps/api/tauri";
+    import { invoke } from "@tauri-apps/api/core";
     import Terminal from './components/Terminal.svelte';
     import Sidebar from "./components/Sidebar.svelte";
     import Editor from "./components/Editor.svelte";
+    import Menu from "./components/Menu.svelte";
     import type { FileEntry } from '$lib/utils/types';
     import {fileStore, refreshPathInStore} from '$lib/stores/fileStore';
     import { selectFile as selectFileInStore } from '$lib/stores/fileStore';
     import { loadFiles as loadFilesUtil, updateAllFiles as flattenFilesUtil } from '$lib/utils/fileLoader';
+    import {
+        BugIcon,
+        ChevronDown,
+        Hammer,
+        HammerIcon,
+        LucideHammer,
+        Play,
+        PlayIcon,
+        PlaySquare,
+        Settings
+    } from "lucide-svelte";
+
+    const settings: string[] = [
+        "Theme",
+        "Keymap",
+        "View Mode"
+    ];
 
     let projectPath: string | null = null;
     let currentPath: string | null = null;
@@ -33,7 +51,8 @@
     let activeFileIndex: number = -1;
     let isSidebarOpen: boolean = true;
     let isTerminalOpen: boolean = false;
-    let actions: Array<string> = [];
+    let x: number, y: number;
+    let isSettingOpen: boolean = false;
 
     // user/system info
     let user: string = '';
@@ -261,7 +280,36 @@
 
 </script>
 
+<Menu Actions={settings} x={x} y={y} isMenuOpen={isSettingOpen} />
+
+<div class="window-title">
+    <button class="project-tab window-title--button">
+        {projectPath ? projectPath.split('/').pop() : 'Untitled'}
+        <ChevronDown class="chevron-down" size={20} />
+    </button>
+    <div class="window-title--group">
+    <button class="window-title--button">
+        <Hammer size={20} />
+    </button>
+    <button class="window-title--button">
+        <Play size={20} />
+    </button>
+    <button class="window-title--button">
+        <BugIcon size={16} />
+    </button>
+    </div>
+
+    <button class="window-title--button" on:click={(e) => {
+        isSettingOpen = !isSettingOpen;
+        x = e.clientX - 180;
+        y = e.clientY + 10;
+    }}>
+        <Settings size={20}/>
+    </button>
+</div>
+
 <main>
+
     <Sidebar
         bind:files={files}
         bind:allFiles={allFiles}

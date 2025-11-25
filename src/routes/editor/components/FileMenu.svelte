@@ -1,6 +1,7 @@
 <script lang="ts">
-    import { invoke } from "@tauri-apps/api/tauri";
+    import { invoke } from "@tauri-apps/api/core";
     import {refreshPathInStore} from "$lib/stores/fileStore";
+    import Menu from "./Menu.svelte";
 
     // Props from Sidebar
     export let toggleFileMenu: (event: Event, isContextMenu: boolean, isDir: boolean, path: string, currentPath: string | null) => void;
@@ -33,7 +34,6 @@
         }
     }
 
-    // Expose the handler to Sidebar via bind
     $: toggleFileMenu = handleToggleFileMenu;
 
     async function triggerAction(action: string) {
@@ -80,30 +80,11 @@
             };
 
             editItem(isDirAction, parentPath, onNameRenameConfirmed);
-        }
-        else if (action === "Move File" || action === "Move Folder") {
-            // const isDirAction = action === "Move Folder";
-            // const parentPath = currentPath || projectPath;
-            //
-            // await invoke("perform_action", { action, file: { path: currentPath, name: "", is_dir: isDir }, newName: ""})
-            //
-            // moveItem();
-        }
-        else {
+        } else {
             await invoke("perform_action", { action, file: { path: currentPath, name: "", is_dir: isDir }, newName: "" });
             await refreshPathInStore(currentPath);
         }
     }
 </script>
 
-<div class="file-menu-container" style="display: {isMenuOpen ? 'flex' : 'none'}; left: {x}px; top: {y}px">
-    {#if Actions.length > 0}
-        {#each Actions as action}
-            <button on:click={() => triggerAction(action)} class="file-menu-item">{action}</button>
-        {/each}
-    {/if}
-</div>
-
-<style lang="scss">
-  @use '../style/file-menu';
-</style>
+<Menu Actions={Actions} x={x} y={y} isMenuOpen={isMenuOpen} triggerAction={triggerAction} />

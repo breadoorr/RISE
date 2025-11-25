@@ -56,21 +56,19 @@ impl From<Actions> for String {
     }
 }
 
-const FILE_ACTIONS: [Actions; 5] = [
+const FILE_ACTIONS: [Actions; 4] = [
     Actions::RenameFile,
     Actions::DeleteFile,
     Actions::CopyFile,
-    Actions::MoveFile,
     Actions::CopyFilePath,
 ];
 
-const FOLDER_ACTIONS: [Actions; 7] = [
+const FOLDER_ACTIONS: [Actions; 6] = [
     Actions::CreateNewFile,
     Actions::CreateNewFolder,
     Actions::RenameFolder,
     Actions::DeleteFolder,
     Actions::CopyFolder,
-    Actions::MoveFolder,
     Actions::CopyFolderPath,
 ];
 

@@ -4,7 +4,7 @@
     import { createEventDispatcher } from "svelte";
     import { loadFiles as loadFilesUtil, updateAllFiles as flattenFilesUtil } from "$lib/utils/fileLoader";
     import FileMenu from "./FileMenu.svelte";
-    import {invoke} from "@tauri-apps/api/tauri";
+    import {invoke} from "@tauri-apps/api/core";
     import {path} from "@tauri-apps/api";
     import {refreshPathInStore} from "$lib/stores/fileStore";
 
@@ -324,7 +324,7 @@
     {#if projectPath}
         <div
                 class="file-list"
-                style="height: {isTerminalOpen ? `calc(100vh - ${terminalHeight+25}px)` : 'calc(100vh - 25px)'};"
+                style="height: {isTerminalOpen ? `calc(100vh - ${terminalHeight+60}px)` : 'calc(100vh - 60px)'};"
         >
             <FileMenu bind:toggleFileMenu bind:createNewItem bind:editItem bind:moveItem />
 
