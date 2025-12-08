@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/tauri";
-  import { open } from "@tauri-apps/api/dialog"
+  import { invoke } from "@tauri-apps/api/core";
+  import { open } from "@tauri-apps/plugin-dialog"
 
   let showProjectNameDialog = false;
   let projectName = "rise-project";
@@ -102,11 +102,20 @@
 
 <main>
   <h1 class="header">Welcome to RISE</h1>
-
+  <div class="main-container">
+  <div>
   <ul class="buttons">
     <li><button class="bt bt--new" onclick={createProject}>New Project<br>➕</button></li>
     <li><button class="bt bt--open" onclick={openProject}>Open Project <br>🗂️</button></li>
   </ul>
+  </div>
+  <div>
+    <h2>Recent Projects</h2>
+    <ul class="buttons">
+<!--      TODO: create cycle to go through recent projects -->
+    </ul>
+  </div>
+  </div>
 
   {#if showProjectNameDialog}
     <div class="dialog-overlay">

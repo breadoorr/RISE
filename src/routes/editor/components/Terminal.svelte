@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { invoke } from "@tauri-apps/api/tauri";
+    import { invoke } from "@tauri-apps/api/core";
     import { Terminal } from 'xterm';
     import { FitAddon } from 'xterm-addon-fit';
     import { WebLinksAddon } from 'xterm-addon-web-links';

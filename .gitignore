@@ -10,5 +10,4 @@ vite.config.ts.timestamp-*
 .vscode
 .idea
 /build
-/build
-/build
+package-lock.json

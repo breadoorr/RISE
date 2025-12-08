@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/tauri";
+  import { invoke } from "@tauri-apps/api/core";
   import type { FileEntry } from "$lib/utils/types";
 
   // Props from parent
@@ -48,23 +48,42 @@
   // Lifecycle: manage key/focus/click listeners related to editor behavior
   onMount(() => {
     const handleKeyDown = async (event: KeyboardEvent) => {
-      if (event.key === 'Tab' && event.target === editorElement) {
+      if (!selectedFile || !editorElement) return;
+      const actionable = ['Tab', 'Enter', '/', '(', '{', '['];
+      const isActionKey = actionable.includes(event.key) || (event.shiftKey && event.key === 'Tab');
+      if (event.target === editorElement && isActionKey) {
+        // Delegate to backend to handle editor input behavior
         event.preventDefault();
-        const target = event.target as HTMLTextAreaElement;
-        const start = target.selectionStart;
-        const end = target.selectionEnd;
-        const text = target.value;
-        const before = text.slice(0, start);
-        const after = text.slice(end);
-        const indent = '    ';
-        const result = before + indent + after;
-        target.selectionStart = start + indent.length;
-        lastBufferContent = result;
-        editorContent = result;
-        isEdited = result !== fileContent;
-        if (editorElement) editorElement.value = result;
-        await updateLineNumbers(result);
-        scheduleHighlight();
+        try {
+          const res = await invoke('process_key_event', {
+            path: selectedFile,
+            key: event.key,
+            selectionStart: editorElement.selectionStart,
+            selectionEnd: editorElement.selectionEnd,
+            shift: event.shiftKey,
+            ctrl: event.ctrlKey,
+            meta: event.metaKey,
+            alt: event.altKey
+          }) as { content: string; selection_start: number; selection_end: number };
+          const updated = res.content;
+          editorContent = updated;
+          lastBufferContent = updated;
+          isEdited = updated !== fileContent;
+          if (editorElement) {
+            editorElement.value = updated;
+            editorElement.selectionStart = res.selection_start;
+            editorElement.selectionEnd = res.selection_end;
+          }
+          await updateLineNumbers(updated);
+          scheduleHighlight();
+          if (isEdited && selectedFile) {
+            if (autoSaveTimeout !== null) clearTimeout(autoSaveTimeout);
+            autoSaveTimeout = setTimeout(autoSave, 500);
+          }
+        } catch (e) {
+          console.error('process_key_event failed', e);
+        }
+        return;
       }
       if (event.ctrlKey || event.metaKey) {
         if (event.key === 's') {
@@ -82,6 +101,11 @@
           if (editorElement) editorElement.value = result;
           await updateLineNumbers(result);
           scheduleHighlight();
+        } else if (event.key === '/') {
+          // Comment/uncomment shortcut handled by process_key_event above when focus on editorElement
+          if (event.target === editorElement) {
+            event.preventDefault();
+          }
         }
       }
     };

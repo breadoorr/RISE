@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 import type { FileEntry } from '$lib/utils/types';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 
 // Initialize the store with default values
 export const fileStore = writable<{

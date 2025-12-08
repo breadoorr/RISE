@@ -1,19 +1,21 @@
 [package]
 name = "rise"
-version = "0.0.2"
-description = "A Tauri App"
+version = "0.0.3"
+description = "RISE IDE build for success"
 authors = ["you"]
 edition = "2021"
 
 [lib]
 name = "rise_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "1.5.6", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
- tauri = { version = "1.8.3", features = [ "path-all", "shell-all", "dialog-all", "fs-all", "window-all"] }
+ tauri = { version = "2", features = [] }
+ tauri-plugin-dialog = "2"
+ tauri-plugin-fs = "2"
  serde = { version = "1.0.219" }
  serde_json = "1"
  hostname = "0.3.0"
@@ -27,9 +29,12 @@ tauri-build = { version = "1.5.6", features = [] }
  tree-sitter-typescript = "0.23.2"
  tree-sitter-c-sharp = "0.23.1"
  tree-sitter-sequel = "0.3.8"
-tree-sitter-javascript = "0.25.0"
+ tree-sitter-javascript = "0.25.0"
  streaming-iterator = "0.1"
-anyhow = "1.0.98"
+ anyhow = "1.0.98"
+
+[target."cfg(target_os = \"macos\")".dependencies]
+cocoa = "0.26"
 
 [dev-dependencies]
 rand = "0.8.5"

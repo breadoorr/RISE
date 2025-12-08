@@ -92,11 +92,16 @@ fn parse_vscode_theme_str(contents: &str) -> anyhow::Result<Theme> {
 }
 
 lazy_static! {
-    static ref DEFAULT_THEME: Theme = {
+    static ref DARK_DEFAULT_THEME: Theme = {
         // Embed theme at compile time to avoid runtime file path issues
         let contents: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/theme/frappe.json"));
         parse_vscode_theme_str(contents).expect("Failed to parse embedded theme")
     };
+
+    // static ref LIGHT_DEFAULT_THEME: Theme = {
+    //     let contents: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/theme/frappe.json"));
+    //     parse_vscode_theme_str(contents).expect("Failed to parse embedded theme")
+    // }
 }
 
 // Public API: get the formatted style for a given kind/scope
@@ -107,7 +112,7 @@ pub fn get_style_for_kind(kind: &str) -> Option<String> {
     let mut best: Option<&TokenStyle> = None;
     let mut best_score: usize = 0;
 
-    for ts in &DEFAULT_THEME.token_styles {
+    for ts in &DARK_DEFAULT_THEME.token_styles {
         for scope in &ts.scope {
             let s = scope.to_lowercase();
             let mut score = 0;
@@ -141,7 +146,7 @@ mod test {
     #[test]
     fn test_embedded_theme_style_lookup() {
         // smoke check a few kinds; may or may not match depending on theme contents
-        let _ = &*DEFAULT_THEME; // ensure initialized
+        let _ = &*DARK_DEFAULT_THEME; // ensure initialized
         let _maybe = get_style_for_kind("keyword");
         // We don't assert on concrete value to avoid coupling to theme, just ensure no panic and format is correct when Some
         if let Some(s) = _maybe { assert!(s.contains("color:")); assert!(s.contains("font-style:")); }
