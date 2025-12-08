@@ -21,11 +21,16 @@
         Settings
     } from "lucide-svelte";
 
-    const settings: string[] = [
+    const SETTINGS: string[] = [
         "Theme",
         "Keymap",
         "View Mode"
     ];
+
+    const PROJECTS: string[] = [
+        "DDD",
+        "LOL"
+    ]
 
     let projectPath: string | null = null;
     let currentPath: string | null = null;
@@ -53,6 +58,7 @@
     let isTerminalOpen: boolean = false;
     let x: number, y: number;
     let isSettingOpen: boolean = false;
+    let actions: string[] = [];
 
     // user/system info
     let user: string = '';
@@ -100,7 +106,7 @@
         }
     })();
 
-    onMount(async () => {
+    onMount( async () => {
         projectPath = localStorage.getItem('projectPath');
         if (projectPath) {
             currentPath = projectPath;
@@ -144,10 +150,6 @@
         };
     });
 
-    async function handleKeyDown(event: KeyboardEvent) {
-        // handled inside Editor component
-    }
-
     // Sidebar now handles expand/collapse and loading. Parent only opens file tabs.
     function openFileFromSidebar(item: FileEntry) {
         if (autoSaveTimeout !== null) {
@@ -166,39 +168,14 @@
     }
 
     function handleInputEvent(event: Event) {
-        toggleFileMenu(event, false);
-    }
-
-    function updateCurrentLine(event: Event) {
-        // handled inside Editor component
-    }
-
-    async function handleEditorChange(event: Event) {
-        // handled inside Editor component
-    }
-
-    async function autoSave() {
-        // handled inside Editor component
+        // toggleFileMenu(event, false);
     }
 
     async function updateLineNumbers(text: string) {
         // handled inside Editor component
     }
 
-    function detectLanguageFromFilename(file: string | null): string {
-        // handled inside Editor component
-        return 'typescript';
-    }
-
     function scheduleHighlight() {
-        // handled inside Editor component
-    }
-
-    function syncLineNumbersScroll() {
-        // handled inside Editor component
-    }
-
-    async function saveFile() {
         // handled inside Editor component
     }
 
@@ -219,7 +196,7 @@
             editorContent = fileContent;
             lastBufferContent = fileContent;
             isEdited = false;
-            updateLineNumbers(fileContent);
+            await updateLineNumbers(fileContent);
             if (editorElement) {
                 editorElement.value = editorContent;
             }
@@ -230,18 +207,10 @@
             editorContent = fileContent;
             lastBufferContent = editorContent;
             isEdited = false;
-            updateLineNumbers(fileContent);
+            await updateLineNumbers(fileContent);
             if (editorElement) {
                 editorElement.value = editorContent;
             }
-        }
-    }
-
-    function restoreEditorContent() {
-        if (selectedFile && activeFileIndex >= 0 && editorElement) {
-            editorElement.value = editorContent;
-            updateLineNumbers(editorContent);
-            currentLine = editorContent.slice(0, editorElement.selectionStart).split('\n').length;
         }
     }
 
@@ -280,10 +249,15 @@
 
 </script>
 
-<Menu Actions={settings} x={x} y={y} isMenuOpen={isSettingOpen} />
+<Menu Actions={actions} x={x} y={y} isMenuOpen={isSettingOpen} />
 
 <div class="window-title">
-    <button class="project-tab window-title--button">
+    <button class="project-tab window-title--button" on:click={(e) => {
+        isSettingOpen = !isSettingOpen;
+        x = e.clientX;
+        y = 30;
+        actions = PROJECTS;
+    }}>
         {projectPath ? projectPath.split('/').pop() : 'Untitled'}
         <ChevronDown class="chevron-down" size={20} />
     </button>
@@ -302,7 +276,8 @@
     <button class="window-title--button" on:click={(e) => {
         isSettingOpen = !isSettingOpen;
         x = e.clientX - 180;
-        y = e.clientY + 10;
+        y = 30;
+        actions = SETTINGS
     }}>
         <Settings size={20}/>
     </button>
