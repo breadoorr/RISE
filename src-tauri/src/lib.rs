@@ -3,8 +3,11 @@ mod highlight;
 mod theme;
 mod actions;
 
+#[cfg(target_os = "macos")]
 use cocoa::appkit::{NSWindowStyleMask, NSWindowTitleVisibility};
+#[cfg(target_os = "macos")]
 use cocoa::base::YES;
+
 pub use commands::{
     create_project,
     execute_command,
@@ -64,20 +67,18 @@ pub fn run() {
                     .title("")
                     .inner_size(800.0, 600.0);
 
-            // set transparent title bar only when building for macOS
             #[cfg(target_os = "macos")]
             let win_builder = win_builder.title_bar_style(TitleBarStyle::Transparent);
 
             let window = win_builder.build().unwrap();
 
-            // set background color only when building for macOS
             #[cfg(target_os = "macos")]
             unsafe {
                 use cocoa::appkit::{NSColor, NSWindow};
                 use cocoa::base::{id, nil};
 
                 let ns_window = window.ns_window().unwrap() as id;
-                ns_window.setTitleVisibility_(NSWindowTitleVisibility::NSWindowTitleHidden); // Hide title
+                ns_window.setTitleVisibility_(NSWindowTitleVisibility::NSWindowTitleHidden);
                 ns_window.setTitlebarAppearsTransparent_(YES);
                 ns_window.setStyleMask_(
                     ns_window.styleMask()
