@@ -20,6 +20,7 @@
         PlaySquare,
         Settings
     } from "lucide-svelte";
+    import { basename } from "@tauri-apps/api/path";
 
     const SETTINGS: string[] = [
         "Theme",
@@ -33,6 +34,7 @@
     ]
 
     let projectPath: string | null = null;
+    let projectName: string | null = null;
     let currentPath: string | null = null;
     let files: FileEntry[] = [];
     let allFiles: FileEntry[] = [];
@@ -110,9 +112,10 @@
         projectPath = localStorage.getItem('projectPath');
         if (projectPath) {
             currentPath = projectPath;
+            projectName = await basename(projectPath);
             const rootEntry: FileEntry = {
                 path: projectPath,
-                name: `${projectPath.split('/').pop()}`,
+                name: projectName || projectPath,
                 is_dir: true,
                 expanded: true,
                 children: [],
@@ -258,7 +261,7 @@
         y = 30;
         actions = PROJECTS;
     }}>
-        {projectPath ? projectPath.split('/').pop() : 'Untitled'}
+        {projectName ?? 'Untitled'}
         <ChevronDown class="chevron-down" size={20} />
     </button>
     <div class="window-title--group">

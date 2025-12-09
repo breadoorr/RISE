@@ -19,7 +19,7 @@
   },
   "productName": "RISE",
   "mainBinaryName": "RISE",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "identifier": "com.rise.app",
   "plugins": {},
   "app": {

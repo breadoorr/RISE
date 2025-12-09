@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store';
 import type { FileEntry } from '$lib/utils/types';
 import { invoke } from '@tauri-apps/api/core';
+import { basename, dirname } from '@tauri-apps/api/path';
 
 // Initialize the store with default values
 export const fileStore = writable<{
@@ -16,7 +17,7 @@ export const fileStore = writable<{
 function makeRoot(projectPath: string, children: FileEntry[] = []): FileEntry {
     return {
         path: projectPath,
-        name: projectPath.split('/').pop() || projectPath,
+        name: projectPath,
         is_dir: true,
         expanded: true,
         children,
@@ -77,7 +78,11 @@ export async function refreshPathInStore(path: string) {
     let dirPath = path;
     const targetNode = findNode(tree, path);
     if (targetNode && !targetNode.is_dir) {
-        dirPath = path.split('/').slice(0, -1).join('/') || currentProjectPath;
+        try {
+            dirPath = await dirname(path);
+        } catch {
+            dirPath = currentProjectPath as string;
+        }
     }
 
     // For project root, ensure we reload children directly under root
