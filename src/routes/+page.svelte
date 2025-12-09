@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog"
+  import {onMount} from "svelte";
 
   let showProjectNameDialog = false;
   let projectName = "rise-project";
@@ -8,6 +9,14 @@
   let projectNameInput: HTMLInputElement;
   let sanitizedName = "";
   let showSanitizeWarning = false;
+  let recentProjects: string[] = [];
+
+  async function loadRecentProjects() {
+    recentProjects = await invoke("get_recent_projects");
+    console.log(recentProjects);
+  }
+
+  onMount(loadRecentProjects);
 
   async function openProject(event: Event) {
     event.preventDefault();
@@ -109,12 +118,16 @@
     <li><button class="bt bt--open" onclick={openProject}>Open Project <br>🗂️</button></li>
   </ul>
   </div>
+    {#if recentProjects.length > 0}
   <div>
     <h2>Recent Projects</h2>
     <ul class="buttons">
-<!--      TODO: create cycle to go through recent projects -->
+      {#each recentProjects as recentProject}
+        <li><button class="bt bt--recent" onclick={() => window.location.href = `/editor?path=${recentProject}`}>{recentProject}</button></li>
+        {/each}
     </ul>
   </div>
+    {/if}
   </div>
 
   {#if showProjectNameDialog}

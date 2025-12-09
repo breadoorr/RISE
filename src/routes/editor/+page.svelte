@@ -28,10 +28,7 @@
         "View Mode"
     ];
 
-    const PROJECTS: string[] = [
-        "DDD",
-        "LOL"
-    ]
+    let PROJECTS: string[] = []
 
     let projectPath: string | null = null;
     let projectName: string | null = null;
@@ -142,6 +139,8 @@
         user = info.user;
         host = info.host;
         home = info.home;
+
+        PROJECTS = await invoke('get_recent_projects');
 
         // Editor component now handles keydown/focus; keep click/keyup here only for FileMenu interactions
         window.addEventListener('keyup', handleInputEvent);
