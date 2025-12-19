@@ -28,7 +28,7 @@
         "View Mode"
     ];
 
-    let PROJECTS: string[] = []
+    let PROJECTS: [string, string];
 
     let projectPath: string | null = null;
     let projectName: string | null = null;
@@ -58,6 +58,7 @@
     let x: number, y: number;
     let isSettingOpen: boolean = false;
     let actions: string[] = [];
+    let projects: boolean = false;
 
     // user/system info
     let user: string = '';
@@ -251,7 +252,12 @@
 
 </script>
 
-<Menu Actions={actions} x={x} y={y} isMenuOpen={isSettingOpen} />
+<Menu Actions={actions} x={x} y={y} isMenuOpen={isSettingOpen} triggerAction={(action) => {
+    if (projects) {
+        localStorage.setItem('projectPath', PROJECTS.find(p => p[1] === action)[0])
+        window.location.href = "/editor";
+    }
+}} />
 
 <div class="window-title">
     <button class="project-tab window-title--button" on:click={(e) => {
@@ -259,6 +265,8 @@
         x = e.clientX;
         y = 30;
         actions = PROJECTS;
+        actions = actions.map(p => p[1]);
+        projects = true;
     }}>
         {projectName ?? 'Untitled'}
         <ChevronDown class="chevron-down" size={20} />

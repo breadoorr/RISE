@@ -9,7 +9,7 @@
   let projectNameInput: HTMLInputElement;
   let sanitizedName = "";
   let showSanitizeWarning = false;
-  let recentProjects: string[] = [];
+  let recentProjects: [string, string];
 
   async function loadRecentProjects() {
     recentProjects = await invoke("get_recent_projects");
@@ -110,25 +110,41 @@
 </script>
 
 <main>
-  <h1 class="header">Welcome to RISE</h1>
   <div class="main-container">
-  <div>
+
+    <div class="welcome-container">
+  <h1 class="header">Welcome to RISE</h1>
+  <div class="buttons-container">
   <ul class="buttons">
     <li><button class="bt bt--new" onclick={createProject}>New Project<br>➕</button></li>
     <li><button class="bt bt--open" onclick={openProject}>Open Project <br>🗂️</button></li>
   </ul>
   </div>
+    </div>
+
+  {#if recentProjects}
     {#if recentProjects.length > 0}
-  <div>
-    <h2>Recent Projects</h2>
-    <ul class="buttons">
-      {#each recentProjects as recentProject}
-        <li><button class="bt bt--recent" onclick={() => window.location.href = `/editor?path=${recentProject}`}>{recentProject}</button></li>
-        {/each}
-    </ul>
-  </div>
+      <div class="recent-projects">
+        <h2>Recent Projects</h2>
+        <ul class="buttons">
+          {#each recentProjects as recentProject}
+            <li><button class="bt bt--recent" onclick={() => {
+              localStorage.setItem('projectPath', recentProject[0])
+              window.location.href = "/editor";
+            }}><span>
+          {recentProject[1]}
+        </span>
+              <br>
+              <span class="path">{recentProject[0]}</span>
+            </button>
+            </li>
+          {/each}
+        </ul>
+      </div>
     {/if}
+  {/if}
   </div>
+
 
   {#if showProjectNameDialog}
     <div class="dialog-overlay">
@@ -158,6 +174,7 @@
       </div>
     </div>
   {/if}
+
 </main>
 
 <style lang="scss">

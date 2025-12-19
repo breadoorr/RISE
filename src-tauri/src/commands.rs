@@ -29,7 +29,7 @@ lazy_static! {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AppConfig {
-    recent_projects: Vec<String>,
+    recent_projects: Vec<(String, String)>,
     theme: String,
 }
 
@@ -75,19 +75,19 @@ fn save_config(cfg: &AppConfig) -> Result<(), String> {
     fs::write(Path::new(&*CONFIG_FILE).join("config.json"), json).map_err(|e| format!("Failed to write config file: {}", e))
 }
 
-fn update_recent_project(project_path: &str) -> Result<(), String> {
+fn update_recent_project(project_name: &str, project_path: &str) -> Result<(), String> {
     let mut cfg = load_config();
     // remove existing occurrences
-    cfg.recent_projects.retain(|p| p != project_path);
+    cfg.recent_projects.retain(|(p, _)| p != project_path);
     // insert at front
-    cfg.recent_projects.insert(0, project_path.to_string());
+    cfg.recent_projects.insert(0, (project_path.to_string(), project_name.to_string()));
     // cap at 10
     if cfg.recent_projects.len() > 10 { cfg.recent_projects.truncate(10); }
     save_config(&cfg)
 }
 
 #[tauri::command]
-pub fn get_recent_projects() -> Result<Vec<String>, String> {
+pub fn get_recent_projects() -> Result<Vec<(String, String)>, String> {
     let cfg = load_config();
     Ok(cfg.recent_projects)
 }
@@ -135,7 +135,7 @@ pub async fn create_project(path: Option<String>, project_name: Option<String>) 
             let readme_content = format!("# {} Project\n\nThis project was created with RISE.\n", folder_name);
             fs::write(&readme_path, readme_content).map_err(|e| format!("Failed to create README.md file: {}", e))?;
             // Ensure config exists and update recent projects list
-            update_recent_project(project_path.to_str().unwrap_or_default())?;
+            update_recent_project(folder_name.as_str(), project_path.to_str().unwrap_or_default())?;
             project_path.to_str().map(|s| s.to_string()).ok_or_else(|| "Failed to convert project path to string".to_string())
         },
         None => Err("No path provided".to_string())
@@ -147,7 +147,7 @@ pub async fn open_project(path: Option<String>) -> Result<String, String> {
     match path {
         Some(p) => {
             // Ensure config exists and update the recent projects list
-            update_recent_project(&p)?;
+            update_recent_project(Path::new(&p).file_name().unwrap().to_str().unwrap_or("Unknown"), &p)?;
             Ok(p)
         },
         None => Err("No path provided".to_string())
