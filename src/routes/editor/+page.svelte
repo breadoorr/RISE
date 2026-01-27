@@ -28,6 +28,12 @@
         "View Mode"
     ];
 
+    const THEMES: string[] = [
+        "latte",
+        "macchiato",
+        "mocha"
+    ]
+
     let PROJECTS: [string, string];
 
     let projectPath: string | null = null;
@@ -59,6 +65,7 @@
     let isSettingOpen: boolean = false;
     let actions: string[] = [];
     let projects: boolean = false;
+    let currentTheme: string;
 
     // user/system info
     let user: string = '';
@@ -107,6 +114,8 @@
     })();
 
     onMount( async () => {
+        currentTheme = localStorage.getItem('theme') || 'default';
+        document.body.classList.toggle(currentTheme + '-theme');
         projectPath = localStorage.getItem('projectPath');
         if (projectPath) {
             currentPath = projectPath;
@@ -250,12 +259,29 @@
         }
     }
 
+    async function changeTheme() {
+        let newTheme = "";
+        if (currentTheme === "default") newTheme = THEMES[0];
+        else if (currentTheme === THEMES[0]) newTheme = THEMES[1];
+        else if (currentTheme === THEMES[1]) newTheme = THEMES[2];
+        else if (currentTheme === THEMES[2]) newTheme = "default";
+
+        console.log(newTheme);
+
+        await invoke("update_app_theme", {newTheme: newTheme});
+        localStorage.setItem("theme", newTheme)
+        document.body.classList.replace(currentTheme + '-theme', newTheme + '-theme');
+        currentTheme = newTheme;
+    }
+
 </script>
 
 <Menu Actions={actions} x={x} y={y} isMenuOpen={isSettingOpen} triggerAction={(action) => {
     if (projects) {
         localStorage.setItem('projectPath', PROJECTS.find(p => p[1] === action)[0])
         window.location.href = "/editor";
+    } else {
+        if (action === "Theme") changeTheme();
     }
 }} />
 

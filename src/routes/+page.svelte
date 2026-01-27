@@ -10,13 +10,20 @@
   let sanitizedName = "";
   let showSanitizeWarning = false;
   let recentProjects: [string, string];
+  let currentTheme: string;
 
   async function loadRecentProjects() {
     recentProjects = await invoke("get_recent_projects");
-    console.log(recentProjects);
+  }
+
+  async function getCurrentTheme() {
+    currentTheme = await invoke("get_app_theme");
+    document.body.classList.add(currentTheme + '-theme');
+    localStorage.setItem('theme', currentTheme);
   }
 
   onMount(loadRecentProjects);
+  onMount(getCurrentTheme);
 
   async function openProject(event: Event) {
     event.preventDefault();

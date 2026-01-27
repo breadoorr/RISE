@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import type { FileEntry } from "$lib/utils/types";
 
   // Props from parent
@@ -44,6 +45,7 @@
   let lastBufferContent: string = "";
   let autoSaveTimeout: number | null = null;
   let highlightTimeout: number | null = null;
+  let unlistenTheme: (() => void) | null = null;
 
   // Lifecycle: manage key/focus/click listeners related to editor behavior
   onMount(() => {
@@ -132,6 +134,19 @@
     // Initial sync
     syncLineNumbersScroll();
 
+    // Listen for theme changes from backend to re-render highlight
+    (async () => {
+      try {
+        const un = await listen<string>('theme-changed', () => {
+          // regenerate highlighted HTML with the new theme
+          scheduleHighlight();
+        });
+        unlistenTheme = () => un();
+      } catch (e) {
+        console.error('failed to listen theme-changed', e);
+      }
+    })();
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleInputEvent);
@@ -139,6 +154,7 @@
       window.removeEventListener('focus', restoreEditorContent);
       if (autoSaveTimeout !== null) clearTimeout(autoSaveTimeout);
       if (highlightTimeout !== null) clearTimeout(highlightTimeout);
+      if (unlistenTheme) { try { unlistenTheme(); } catch {} }
     };
   });
 

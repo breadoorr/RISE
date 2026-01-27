@@ -46,8 +46,11 @@
     const isMac = navigator.userAgent.toLowerCase().includes('mac');
 
     function getCssVar(name: string): string {
-        const v = getComputedStyle(document.documentElement).getPropertyValue(name);
-        return v ? v.trim() : '';
+        // Prefer variables defined on body (theme classes are applied to body), fallback to :root
+        const bodyVal = getComputedStyle(document.body).getPropertyValue(name);
+        if (bodyVal && bodyVal.trim()) return bodyVal.trim();
+        const rootVal = getComputedStyle(document.documentElement).getPropertyValue(name);
+        return rootVal ? rootVal.trim() : '';
     }
 
     function getXtermTheme(): { cursor: string; background: string; foreground: string } {
@@ -55,9 +58,9 @@
         const background = getCssVar('--background-100');
         const foreground = getCssVar('--text-800');
         return {
-            cursor: cursor || '#e5e7eb',
-            background: background || '#111111',
-            foreground: foreground || '#e5e7eb',
+            cursor: cursor,
+            background: background,
+            foreground: foreground,
         };
     }
 
@@ -65,6 +68,7 @@
         const theme = getXtermTheme();
         terminalTabs.forEach(t => {
             if (!t.terminal) return;
+            // Use runtime option update to ensure xterm applies new theme immediately
             t.terminal.options.theme = {
                 cursor: theme.cursor,
                 background: theme.background,
@@ -312,7 +316,11 @@
             mql.addEventListener('change', onSchemeChange);
         }
         themeObserver = new MutationObserver(() => applyThemeToAllTerminals());
-        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
+        // Observe theme class changes; theme classes are applied to body
+        const target1 = document.body;
+        const target2 = document.documentElement;
+        if (target1) themeObserver.observe(target1, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
+        if (target2 && target2 !== target1) themeObserver.observe(target2, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
 
         window.addEventListener('resize', handleWindowResize);
 

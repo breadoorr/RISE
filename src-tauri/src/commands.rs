@@ -10,6 +10,8 @@ use std::sync::Mutex;
 use streaming_iterator::StreamingIterator;
 use crate::highlight::{escape_html, calculate_edit, highlight_ast};
 use serde_json;
+use crate::theme::reload_theme;
+use tauri::Emitter;
 
 #[derive(Clone, Debug)]
 struct EditEntry {
@@ -90,6 +92,24 @@ fn update_recent_project(project_name: &str, project_path: &str) -> Result<(), S
 pub fn get_recent_projects() -> Result<Vec<(String, String)>, String> {
     let cfg = load_config();
     Ok(cfg.recent_projects)
+}
+
+#[tauri::command]
+pub fn get_app_theme() -> String {
+    let cfg = load_config();
+    cfg.theme.clone()
+}
+
+#[tauri::command]
+pub fn update_app_theme(app: tauri::AppHandle, new_theme: String) {
+    let mut cfg = load_config();
+    cfg.theme = new_theme;
+    save_config(&cfg).expect("failed to change theme");
+    reload_theme();
+    // Emit a global event so the frontend can re-render highlighted text
+    let _ = app.emit("theme-changed", cfg.theme.clone());
+    cfg = load_config();
+    println!("Theme changed to {}", cfg.theme);
 }
 
 #[derive(Serialize, Deserialize)]

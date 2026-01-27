@@ -87,6 +87,7 @@
             editItem(isDirAction, parentPath, onNameRenameConfirmed);
         } else {
             await invoke("perform_action", { action, file: { path: currentPath, name: "", is_dir: isDir }, newName: "" });
+            isMenuOpen = false;
             await refreshPathInStore(currentPath);
         }
     }
