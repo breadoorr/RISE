@@ -9,6 +9,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use streaming_iterator::StreamingIterator;
 use crate::highlight::{escape_html, calculate_edit, highlight_ast};
+use serde_json;
+use crate::theme::reload_theme;
+use tauri::Emitter;
 
 #[derive(Clone, Debug)]
 struct EditEntry {
@@ -23,6 +26,90 @@ pub struct EditorBuffer {
 
 lazy_static! {
     pub static ref EDITOR_BUFFERS: Mutex<HashMap<String, EditorBuffer>> = Mutex::new(HashMap::new());
+    pub static ref CONFIG_FILE: String = Path::new("/Users/ddorabble/RISE").to_string_lossy().into_owned();
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AppConfig {
+    recent_projects: Vec<(String, String)>,
+    theme: String,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig { recent_projects: Vec::new(), theme: "default".to_string() }
+    }
+}
+
+fn load_config() -> AppConfig {
+    let path = Path::new(&*CONFIG_FILE);
+    if !path.exists() {
+        // create with defaults
+        fs::create_dir(path).expect("Failed to create config directory");
+        let cfg = AppConfig::default();
+        let _ = save_config(&cfg);
+        return cfg;
+    }
+    let content = fs::read_to_string(path.join("config.json")).unwrap_or_else(|_| String::new());
+    if content.trim().is_empty() {
+        let cfg = AppConfig::default();
+        let _ = save_config(&cfg);
+        return cfg;
+    }
+    match serde_json::from_str::<AppConfig>(&content) {
+        Ok(mut cfg) => {
+            // Backfill defaults if fields are missing
+            if cfg.theme.is_empty() { cfg.theme = "default".to_string(); }
+            if cfg.recent_projects.len() > 10 { cfg.recent_projects.truncate(10); }
+            cfg
+        }
+        Err(_) => {
+            // If existing file is not valid JSON (from previous versions), reset to defaults
+            let cfg = AppConfig::default();
+            let _ = save_config(&cfg);
+            cfg
+        }
+    }
+}
+
+fn save_config(cfg: &AppConfig) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(Path::new(&*CONFIG_FILE).join("config.json"), json).map_err(|e| format!("Failed to write config file: {}", e))
+}
+
+fn update_recent_project(project_name: &str, project_path: &str) -> Result<(), String> {
+    let mut cfg = load_config();
+    // remove existing occurrences
+    cfg.recent_projects.retain(|(p, _)| p != project_path);
+    // insert at front
+    cfg.recent_projects.insert(0, (project_path.to_string(), project_name.to_string()));
+    // cap at 10
+    if cfg.recent_projects.len() > 10 { cfg.recent_projects.truncate(10); }
+    save_config(&cfg)
+}
+
+#[tauri::command]
+pub fn get_recent_projects() -> Result<Vec<(String, String)>, String> {
+    let cfg = load_config();
+    Ok(cfg.recent_projects)
+}
+
+#[tauri::command]
+pub fn get_app_theme() -> String {
+    let cfg = load_config();
+    cfg.theme.clone()
+}
+
+#[tauri::command]
+pub fn update_app_theme(app: tauri::AppHandle, new_theme: String) {
+    let mut cfg = load_config();
+    cfg.theme = new_theme;
+    save_config(&cfg).expect("failed to change theme");
+    reload_theme();
+    // Emit a global event so the frontend can re-render highlighted text
+    let _ = app.emit("theme-changed", cfg.theme.clone());
+    cfg = load_config();
+    println!("Theme changed to {}", cfg.theme);
 }
 
 #[derive(Serialize, Deserialize)]
@@ -67,6 +154,8 @@ pub async fn create_project(path: Option<String>, project_name: Option<String>) 
             let readme_path = project_path.join("README.md");
             let readme_content = format!("# {} Project\n\nThis project was created with RISE.\n", folder_name);
             fs::write(&readme_path, readme_content).map_err(|e| format!("Failed to create README.md file: {}", e))?;
+            // Ensure config exists and update recent projects list
+            update_recent_project(folder_name.as_str(), project_path.to_str().unwrap_or_default())?;
             project_path.to_str().map(|s| s.to_string()).ok_or_else(|| "Failed to convert project path to string".to_string())
         },
         None => Err("No path provided".to_string())
@@ -76,7 +165,11 @@ pub async fn create_project(path: Option<String>, project_name: Option<String>) 
 #[tauri::command]
 pub async fn open_project(path: Option<String>) -> Result<String, String> {
     match path {
-        Some(p) => Ok(p),
+        Some(p) => {
+            // Ensure config exists and update the recent projects list
+            update_recent_project(Path::new(&p).file_name().unwrap().to_str().unwrap_or("Unknown"), &p)?;
+            Ok(p)
+        },
         None => Err("No path provided".to_string())
     }
 }

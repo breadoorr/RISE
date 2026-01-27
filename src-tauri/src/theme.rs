@@ -3,6 +3,9 @@
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use lazy_static::lazy_static;
+use std::fs;
+use std::sync::RwLock;
+use crate::commands;
 
 #[derive(Debug, Default, Clone)]
 struct Style {
@@ -91,17 +94,35 @@ fn parse_vscode_theme_str(contents: &str) -> anyhow::Result<Theme> {
     })
 }
 
-lazy_static! {
-    static ref DARK_DEFAULT_THEME: Theme = {
-        // Embed theme at compile time to avoid runtime file path issues
-        let contents: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/theme/frappe.json"));
-        parse_vscode_theme_str(contents).expect("Failed to parse embedded theme")
+
+fn load_theme_from_config() -> Theme {
+    // Determine theme file from config; fallback to default (frappe)
+    let theme_name = commands::get_app_theme();
+    let base = env!("CARGO_MANIFEST_DIR");
+    let default_path = format!("{}/src/theme/frappe.json", base);
+    let selected_path = if theme_name != "default" {
+        println!("Selected theme: {}", theme_name);
+        format!("{}/src/theme/{}.json", base, theme_name)
+    } else {
+        default_path.clone()
     };
 
-    // static ref LIGHT_DEFAULT_THEME: Theme = {
-    //     let contents: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/theme/frappe.json"));
-    //     parse_vscode_theme_str(contents).expect("Failed to parse embedded theme")
-    // }
+    // Read selected theme, with graceful fallback to default
+    let contents = fs::read_to_string(&selected_path)
+        .or_else(|_| fs::read_to_string(&default_path))
+        .unwrap_or_else(|_| "{\n  \"tokenColors\": []\n}".to_string());
+
+    parse_vscode_theme_str(contents.as_str()).unwrap_or_else(|_| Theme { name: "fallback".into(), token_styles: Vec::new() })
+}
+
+lazy_static! {
+    static ref ACTIVE_THEME: RwLock<Theme> = RwLock::new(load_theme_from_config());
+}
+
+/// Reload theme from config at runtime (e.g., call on app start or when user changes theme)
+pub fn reload_theme() {
+    let mut t = ACTIVE_THEME.write().expect("theme lock poisoned");
+    *t = load_theme_from_config();
 }
 
 // Public API: get the formatted style for a given kind/scope
@@ -112,7 +133,8 @@ pub fn get_style_for_kind(kind: &str) -> Option<String> {
     let mut best: Option<&TokenStyle> = None;
     let mut best_score: usize = 0;
 
-    for ts in &DARK_DEFAULT_THEME.token_styles {
+    let theme = ACTIVE_THEME.read().expect("theme lock poisoned");
+    for ts in &theme.token_styles {
         for scope in &ts.scope {
             let s = scope.to_lowercase();
             let mut score = 0;
@@ -145,8 +167,7 @@ mod test {
 
     #[test]
     fn test_embedded_theme_style_lookup() {
-        // smoke check a few kinds; may or may not match depending on theme contents
-        let _ = &*DARK_DEFAULT_THEME; // ensure initialized
+        // smoke check a few kinds; ensure no panic and static can be read
         let _maybe = get_style_for_kind("keyword");
         // We don't assert on concrete value to avoid coupling to theme, just ensure no panic and format is correct when Some
         if let Some(s) = _maybe { assert!(s.contains("color:")); assert!(s.contains("font-style:")); }

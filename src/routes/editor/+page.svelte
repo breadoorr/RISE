@@ -20,6 +20,7 @@
         PlaySquare,
         Settings
     } from "lucide-svelte";
+    import { basename } from "@tauri-apps/api/path";
 
     const SETTINGS: string[] = [
         "Theme",
@@ -27,12 +28,16 @@
         "View Mode"
     ];
 
-    const PROJECTS: string[] = [
-        "DDD",
-        "LOL"
+    const THEMES: string[] = [
+        "latte",
+        "macchiato",
+        "mocha"
     ]
 
+    let PROJECTS: [string, string];
+
     let projectPath: string | null = null;
+    let projectName: string | null = null;
     let currentPath: string | null = null;
     let files: FileEntry[] = [];
     let allFiles: FileEntry[] = [];
@@ -59,6 +64,8 @@
     let x: number, y: number;
     let isSettingOpen: boolean = false;
     let actions: string[] = [];
+    let projects: boolean = false;
+    let currentTheme: string;
 
     // user/system info
     let user: string = '';
@@ -107,12 +114,15 @@
     })();
 
     onMount( async () => {
+        currentTheme = localStorage.getItem('theme') || 'default';
+        document.body.classList.toggle(currentTheme + '-theme');
         projectPath = localStorage.getItem('projectPath');
         if (projectPath) {
             currentPath = projectPath;
+            projectName = await basename(projectPath);
             const rootEntry: FileEntry = {
                 path: projectPath,
-                name: `${projectPath.split('/').pop()}`,
+                name: projectName || projectPath,
                 is_dir: true,
                 expanded: true,
                 children: [],
@@ -139,6 +149,8 @@
         user = info.user;
         host = info.host;
         home = info.home;
+
+        PROJECTS = await invoke('get_recent_projects');
 
         // Editor component now handles keydown/focus; keep click/keyup here only for FileMenu interactions
         window.addEventListener('keyup', handleInputEvent);
@@ -247,9 +259,31 @@
         }
     }
 
+    async function changeTheme() {
+        let newTheme = "";
+        if (currentTheme === "default") newTheme = THEMES[0];
+        else if (currentTheme === THEMES[0]) newTheme = THEMES[1];
+        else if (currentTheme === THEMES[1]) newTheme = THEMES[2];
+        else if (currentTheme === THEMES[2]) newTheme = "default";
+
+        console.log(newTheme);
+
+        await invoke("update_app_theme", {newTheme: newTheme});
+        localStorage.setItem("theme", newTheme)
+        document.body.classList.replace(currentTheme + '-theme', newTheme + '-theme');
+        currentTheme = newTheme;
+    }
+
 </script>
 
-<Menu Actions={actions} x={x} y={y} isMenuOpen={isSettingOpen} />
+<Menu Actions={actions} x={x} y={y} isMenuOpen={isSettingOpen} triggerAction={(action) => {
+    if (projects) {
+        localStorage.setItem('projectPath', PROJECTS.find(p => p[1] === action)[0])
+        window.location.href = "/editor";
+    } else {
+        if (action === "Theme") changeTheme();
+    }
+}} />
 
 <div class="window-title">
     <button class="project-tab window-title--button" on:click={(e) => {
@@ -257,8 +291,10 @@
         x = e.clientX;
         y = 30;
         actions = PROJECTS;
+        actions = actions.map(p => p[1]);
+        projects = true;
     }}>
-        {projectPath ? projectPath.split('/').pop() : 'Untitled'}
+        {projectName ?? 'Untitled'}
         <ChevronDown class="chevron-down" size={20} />
     </button>
     <div class="window-title--group">

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog"
+  import {onMount} from "svelte";
 
   let showProjectNameDialog = false;
   let projectName = "rise-project";
@@ -8,6 +9,21 @@
   let projectNameInput: HTMLInputElement;
   let sanitizedName = "";
   let showSanitizeWarning = false;
+  let recentProjects: [string, string];
+  let currentTheme: string;
+
+  async function loadRecentProjects() {
+    recentProjects = await invoke("get_recent_projects");
+  }
+
+  async function getCurrentTheme() {
+    currentTheme = await invoke("get_app_theme");
+    document.body.classList.add(currentTheme + '-theme');
+    localStorage.setItem('theme', currentTheme);
+  }
+
+  onMount(loadRecentProjects);
+  onMount(getCurrentTheme);
 
   async function openProject(event: Event) {
     event.preventDefault();
@@ -101,21 +117,41 @@
 </script>
 
 <main>
-  <h1 class="header">Welcome to RISE</h1>
   <div class="main-container">
-  <div>
+
+    <div class="welcome-container">
+  <h1 class="header">Welcome to RISE</h1>
+  <div class="buttons-container">
   <ul class="buttons">
     <li><button class="bt bt--new" onclick={createProject}>New Project<br>➕</button></li>
     <li><button class="bt bt--open" onclick={openProject}>Open Project <br>🗂️</button></li>
   </ul>
   </div>
-  <div>
-    <h2>Recent Projects</h2>
-    <ul class="buttons">
-<!--      TODO: create cycle to go through recent projects -->
-    </ul>
+    </div>
+
+  {#if recentProjects}
+    {#if recentProjects.length > 0}
+      <div class="recent-projects">
+        <h2>Recent Projects</h2>
+        <ul class="buttons">
+          {#each recentProjects as recentProject}
+            <li><button class="bt bt--recent" onclick={() => {
+              localStorage.setItem('projectPath', recentProject[0])
+              window.location.href = "/editor";
+            }}><span>
+          {recentProject[1]}
+        </span>
+              <br>
+              <span class="path">{recentProject[0]}</span>
+            </button>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+  {/if}
   </div>
-  </div>
+
 
   {#if showProjectNameDialog}
     <div class="dialog-overlay">
@@ -145,6 +181,7 @@
       </div>
     </div>
   {/if}
+
 </main>
 
 <style lang="scss">

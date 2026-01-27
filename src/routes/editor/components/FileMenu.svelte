@@ -1,5 +1,6 @@
 <script lang="ts">
     import { invoke } from "@tauri-apps/api/core";
+    import { join, dirname } from "@tauri-apps/api/path";
     import {refreshPathInStore} from "$lib/stores/fileStore";
     import Menu from "./Menu.svelte";
 
@@ -44,7 +45,7 @@
 
             let onNameCreateConfirmed = async (name: string) => {
                 try {
-                    const newPath = `${parentPath}/${name}`;
+                    const newPath = await join(parentPath, name);
                     await invoke("perform_action", {
                         action,
                         file: { path: newPath, name, is_dir: isDirAction },
@@ -65,14 +66,18 @@
             const parentPath = currentPath || projectPath;
             let onNameRenameConfirmed = async (name: string) => {
                 try {
-                    const newPath = parentPath.split("/").slice(0, -1).join('/').concat(`/${name}`);
+                    const parentDir = await dirname(parentPath);
+                    const newPath = await join(parentDir, name);
                     console.log("New path:", newPath, " Parent path:", parentPath, "  Name:", name);
                     await invoke("perform_action", {
                         action,
                         file: { path: parentPath, name, is_dir: isDirAction },
                         newName: newPath
                     });
-                    await refreshPathInStore(parentPath);
+                    const oldParent = await dirname(parentPath);
+                    const newParent = await dirname(newPath);
+                    await refreshPathInStore(oldParent);
+                    await refreshPathInStore(newParent);
                 } catch (e) {
                     console.error("Failed to create item:", e);
                     throw e;
@@ -82,6 +87,7 @@
             editItem(isDirAction, parentPath, onNameRenameConfirmed);
         } else {
             await invoke("perform_action", { action, file: { path: currentPath, name: "", is_dir: isDir }, newName: "" });
+            isMenuOpen = false;
             await refreshPathInStore(currentPath);
         }
     }

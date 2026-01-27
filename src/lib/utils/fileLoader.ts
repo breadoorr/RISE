@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { FileEntry } from "./types";
+import { basename, dirname } from "@tauri-apps/api/path";
 
 // Pure helper to load directory contents and normalize fields without holding module state
 export async function loadFiles(path: string, level: number = 0): Promise<FileEntry[]> {
@@ -8,7 +9,8 @@ export async function loadFiles(path: string, level: number = 0): Promise<FileEn
 
     for (const file of dirFiles) {
       file.level = level;
-      file.parent_dir = path.split("/").slice(-2, -1)[0] || "";
+      const parent = await dirname(path);
+      file.parent_dir = await basename(parent) || "";
       if (file.is_dir) {
         file.expanded = false;
         file.children = [];

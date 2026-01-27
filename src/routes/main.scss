@@ -15,9 +15,8 @@
 .main-container {
   display: flex;
   flex-direction: row;
-  align-items: center;
   justify-content: center;
-  gap: 100px;
+  align-items: center;
 }
 
 .dialog-overlay {
@@ -128,9 +127,19 @@ main {
   overflow: hidden;
 }
 
-.header {
-  margin-top: 10vh;
-  font-size: xxx-large;
+.welcome-container {
+  width: 65%;
+
+  .header {
+    margin-top: 10vh;
+    font-size: xxx-large;
+  }
+
+  .buttons-container {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+  }
 }
 
 .buttons {
@@ -139,8 +148,21 @@ main {
   margin: 0;
 }
 
-li {
-  max-width: 240px;
+.recent-projects {
+  display: flex;
+  flex-direction: column;
+  background: var(--accent-100);
+  height: 100vh;
+  width: 35%;
+
+  h2 {
+    padding-bottom: 3vh;
+    border-bottom: 1px solid var(--accent-300);
+  }
+
+  ul {
+    margin-top: 5px;
+  }
 }
 
 .bt {
@@ -155,6 +177,30 @@ li {
   box-shadow: 2px 2px 1px 1px var(--accent-300);
   background-color: var(--accent-500);
   cursor: pointer;
+  text-wrap: pretty;
+
+  &--recent {
+    box-shadow: none;
+    background-color: var(--accent-100);
+    border-radius: 0;
+    margin: 0;
+    padding: 0;
+    max-width: 100%;
+    width: 100%;
+
+    &:hover {
+      background-color: var(--accent-200);
+    }
+
+    .path {
+      width: 100%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0.7;
+      font-size: 0.9rem;
+    }
+  }
 
   &:hover {
     background-color: var(--accent-300);
@@ -179,6 +225,5 @@ li {
 
   li {
     width: 100%;
-    max-width: 140px;
   }
 }

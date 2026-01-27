@@ -5,7 +5,7 @@
     import { loadFiles as loadFilesUtil, updateAllFiles as flattenFilesUtil } from "$lib/utils/fileLoader";
     import FileMenu from "./FileMenu.svelte";
     import {invoke} from "@tauri-apps/api/core";
-    import {path} from "@tauri-apps/api";
+    import { join, dirname } from "@tauri-apps/api/path";
     import {refreshPathInStore} from "$lib/stores/fileStore";
 
     const dispatch = createEventDispatcher();
@@ -34,6 +34,19 @@
     // Regex for valid file/folder names: alphanumeric, spaces, hyphens, underscores, periods (for files)
     const validNameRegex = /^[a-zA-Z0-9 _-]([a-zA-Z0-9 _.-]*[a-zA-Z0-9 _-])?$/;
     const invalidChars = /[\/\\:*?"<>|]/;
+
+    // Cross-platform check: is `child` located within `parent` (or equal)
+    async function isDescendant(parent: string, child: string): Promise<boolean> {
+        if (parent === child) return true;
+        let cur = child;
+        while (true) {
+            const next = await dirname(cur);
+            if (next === cur) break; // reached filesystem root
+            if (next === parent) return true;
+            cur = next;
+        }
+        return false;
+    }
 
     function handleResize(event: MouseEvent) {
         const startX = event.clientX;
@@ -69,7 +82,8 @@
         currentOnNameConfirmed = onNameConfirmed;
         const targetPath = parentPath || projectPath;
         const tempName = isDir ? "New Folder" : "New File";
-        const tempPath = `${targetPath}/${tempName}`;
+        // Use a unique temporary path token to avoid OS-specific separators and collisions
+        const tempPath = `${targetPath}::${tempName}::temp-${Date.now()}`;
 
         const newItem: FileEntry = {
             parent_dir: parentPath || undefined,
@@ -153,7 +167,7 @@
         event.preventDefault();
         event.stopPropagation();
         console.log("Over");
-        if (!file.is_dir || !draggedItem || file.path === draggedItem.path || draggedItem.path.startsWith(`${file.path}/`)) return;
+        if (!file.is_dir || !draggedItem || file.path === draggedItem.path || await isDescendant(draggedItem.path, file.path)) return;
         if (!file.expanded) file.expanded = true;
         if (file.expanded && (!file.children || file.children.length === 0)) {
             try {
@@ -184,9 +198,9 @@
         // event.stopPropagation();
         console.log("Drop:", event, file, draggedItem);
         dropTargetPath = null;
-        if (!draggedItem || !file.is_dir || file.path === draggedItem.path || draggedItem.path.startsWith(`${file.path}/`)) return;
+        if (!draggedItem || !file.is_dir || file.path === draggedItem.path || await isDescendant(draggedItem.path, file.path)) return;
 
-        const newPath = await path.join(file.path, draggedItem.name);
+        const newPath = await join(file.path, draggedItem.name);
         try {
             moveItem(draggedItem.path, newPath);
         } catch (e) {
@@ -202,8 +216,10 @@
         let action = item.is_dir ? "Move Folder" : "Move File"
         let res = await invoke('perform_action', { action, file: {path: sourcePath, name: item.name, is_dir: item.is_dir}, newName: newPath });
         console.log(res);
-        await refreshPathInStore(sourcePath.split('/').slice(0, -1).join('/'));
-        await refreshPathInStore(newPath.split('/').slice(0, -1).join('/'));
+        const oldParent = await dirname(sourcePath);
+        const newParent = await dirname(newPath);
+        await refreshPathInStore(oldParent);
+        await refreshPathInStore(newParent);
     };
 
     async function saveNewItem(event: KeyboardEvent, item: FileEntry) {
@@ -217,7 +233,8 @@
             try {
                 // Update the item in the UI
                 item.name = newItemName.trim();
-                item.path = `${item.path.split('/').slice(0, -1).join('/')}/${item.name}`;
+                const parentDir = item.parent_dir ?? await dirname(item.path);
+                item.path = await join(parentDir, item.name);
                 item.isEditing = false;
                 item.temp = false;
 
