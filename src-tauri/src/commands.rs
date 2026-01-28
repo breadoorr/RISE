@@ -127,7 +127,7 @@ pub struct SystemInfo {
 }
 
 #[tauri::command]
-pub async fn create_project(path: Option<String>, project_name: Option<String>) -> Result<String, String> {
+pub async fn create_project(path: Option<String>, project_name: Option<String>, template: Option<String>) -> Result<String, String> {
     match path {
         Some(p) => {
             let base_path = Path::new(&p);
@@ -142,18 +142,30 @@ pub async fn create_project(path: Option<String>, project_name: Option<String>) 
                 .trim()
                 .to_string();
             let folder_name = if folder_name.is_empty() { "rise-project".to_string() } else { folder_name };
+            let chosen_template = template.unwrap_or_else(|| "Blank".to_string());
+            println!("Creating project with template: {}", chosen_template);
             let project_path = base_path.join(&folder_name);
             fs::create_dir_all(&project_path).map_err(|e| format!("Failed to create project directory: {}", e))?;
-            let src_path = project_path.join("src");
-            if !src_path.exists() {
-                fs::create_dir_all(&src_path).map_err(|e| format!("Failed to create src directory: {}", e))?;
+            if chosen_template == "NPM" {
+                let src_path = project_path.join("src");
+                if !src_path.exists() {
+                    fs::create_dir_all(&src_path).map_err(|e| format!("Failed to create src directory: {}", e))?;
+                }
+                let index_path = src_path.join("index.js");
+                let index_content = "// Main entry point for your project\n\nconsole.log('Hello from RISE project!');\n";
+                fs::write(&index_path, index_content).map_err(|e| format!("Failed to create index.js file: {}", e))?;
+                let readme_path = project_path.join("README.md");
+                let readme_content = format!("# {} Project\n\nThis project was created with RISE.\n\nTemplate (mock): {}\n", folder_name, chosen_template);
+                fs::write(&readme_path, readme_content).map_err(|e| format!("Failed to create README.md file: {}", e))?;
+            } else if chosen_template == "Rust" {
+                let src_path = project_path.join("src");
+                if !src_path.exists() {
+                    fs::create_dir_all(&src_path).map_err(|e| format!("Failed to create src directory: {}", e))?;
+                }
+                let main_path = src_path.join("main.rs");
+                let main_content = "// Main entry point for your project\n\nfn main() {\n    println!(\"Hello from RISE project!\");\n}\n";
+                fs::write(&main_path, main_content).map_err(|e| format!("Failed to create main.rs file: {}", e))?;
             }
-            let index_path = src_path.join("index.js");
-            let index_content = "// Main entry point for your project\n\nconsole.log('Hello from RISE project!');\n";
-            fs::write(&index_path, index_content).map_err(|e| format!("Failed to create index.js file: {}", e))?;
-            let readme_path = project_path.join("README.md");
-            let readme_content = format!("# {} Project\n\nThis project was created with RISE.\n", folder_name);
-            fs::write(&readme_path, readme_content).map_err(|e| format!("Failed to create README.md file: {}", e))?;
             // Ensure config exists and update recent projects list
             update_recent_project(folder_name.as_str(), project_path.to_str().unwrap_or_default())?;
             project_path.to_str().map(|s| s.to_string()).ok_or_else(|| "Failed to convert project path to string".to_string())
