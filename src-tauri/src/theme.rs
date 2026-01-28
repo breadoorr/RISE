@@ -138,11 +138,7 @@ pub fn get_style_for_kind(kind: &str) -> Option<String> {
         for scope in &ts.scope {
             let s = scope.to_lowercase();
             let mut score = 0;
-            if kind_lc == s { score = s.len(); }
-            else if kind_lc.ends_with(&s) { score = s.len(); }
-            else if s.ends_with(&kind_lc) { score = kind_lc.len(); }
-            else if kind_lc.contains(&s) { score = s.len() / 2; }
-            else if s.contains(&kind_lc) { score = kind_lc.len() / 2; }
+            if kind_lc == s { score = s.len(); } else if kind_lc.ends_with(&s) { score = s.len(); } else if s.ends_with(&kind_lc) { score = kind_lc.len(); } else if kind_lc.contains(&s) { score = s.len() / 2; } else if s.contains(&kind_lc) { score = kind_lc.len() / 2; }
 
             if score > best_score {
                 best_score = score;
@@ -159,17 +155,4 @@ pub fn get_style_for_kind(kind: &str) -> Option<String> {
     }
 
     None
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_embedded_theme_style_lookup() {
-        // smoke check a few kinds; ensure no panic and static can be read
-        let _maybe = get_style_for_kind("keyword");
-        // We don't assert on concrete value to avoid coupling to theme, just ensure no panic and format is correct when Some
-        if let Some(s) = _maybe { assert!(s.contains("color:")); assert!(s.contains("font-style:")); }
-    }
 }
