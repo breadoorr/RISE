@@ -2,6 +2,8 @@ mod commands;
 mod highlight;
 mod theme;
 mod actions;
+mod file_watcher;
+mod project;
 
 #[cfg(target_os = "macos")]
 use cocoa::appkit::{NSWindowStyleMask, NSWindowTitleVisibility};
@@ -34,6 +36,7 @@ pub use commands::{
 
 pub use highlight::highlight_html;
 pub use actions::{get_actions, perform_action};
+pub use file_watcher::set_watched_path;
 
 use tauri::{Manager, TitleBarStyle, WebviewUrl, WebviewWindowBuilder};
 
@@ -77,7 +80,6 @@ pub fn run() {
             let win_builder = win_builder.title_bar_style(TitleBarStyle::Transparent);
 
             let window = win_builder.build().unwrap();
-
             #[cfg(target_os = "macos")]
             unsafe {
                 use cocoa::appkit::{NSColor, NSWindow};

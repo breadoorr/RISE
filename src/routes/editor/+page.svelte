@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { invoke } from "@tauri-apps/api/core";
+    import { listen } from "@tauri-apps/api/event";
     import Terminal from './components/Terminal.svelte';
     import Sidebar from "./components/Sidebar.svelte";
     import Editor from "./components/Editor.svelte";
@@ -21,6 +22,7 @@
         Settings
     } from "lucide-svelte";
     import { basename } from "@tauri-apps/api/path";
+    import { get } from 'svelte/store';
 
     const SETTINGS: string[] = [
         "Theme",
@@ -118,6 +120,9 @@
         document.body.classList.toggle(currentTheme + '-theme');
         projectPath = localStorage.getItem('projectPath');
         if (projectPath) {
+            // Inform backend that the project is opened so watcher starts
+            try { await invoke('open_project', { path: projectPath }); } catch (e) { console.error('open_project failed', e); }
+
             currentPath = projectPath;
             projectName = await basename(projectPath);
             const rootEntry: FileEntry = {
@@ -156,9 +161,22 @@
         window.addEventListener('keyup', handleInputEvent);
         window.addEventListener('click', handleInputEvent);
 
+        // Listen for backend file system changes and refresh current project tree
+        const unlistenFs = await listen<string>('fs-changed', async (_evt) => {
+            try {
+                const state = get(fileStore) as { projectPath: string | null };
+                if (state.projectPath) {
+                    await refreshPathInStore(state.projectPath);
+                }
+            } catch (e) {
+                console.error('Failed to handle fs-changed event', e);
+            }
+        });
+
         return () => {
             window.removeEventListener('keyup', handleInputEvent);
             window.removeEventListener('click', handleInputEvent);
+            try { unlistenFs(); } catch {}
         };
     });
 

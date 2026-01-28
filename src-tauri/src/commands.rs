@@ -163,11 +163,13 @@ pub async fn create_project(path: Option<String>, project_name: Option<String>) 
 }
 
 #[tauri::command]
-pub async fn open_project(path: Option<String>) -> Result<String, String> {
+pub async fn open_project(app: tauri::AppHandle, path: Option<String>) -> Result<String, String> {
     match path {
         Some(p) => {
             // Ensure config exists and update the recent projects list
             update_recent_project(Path::new(&p).file_name().unwrap().to_str().unwrap_or("Unknown"), &p)?;
+            // Start/point the file watcher to this project path
+            crate::file_watcher::set_watched_path(app, p.clone());
             Ok(p)
         },
         None => Err("No path provided".to_string())
@@ -181,7 +183,10 @@ pub async fn read_file(path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn write_file(path: String, content: String) -> Result<(), String> {
-    fs::write(&path, content).map_err(|e| format!("Failed to write file: {}", e))
+    fs::write(&path, content).map_err(|e| format!("Failed to write file: {}", e))?;
+    // mark this as a self-generated change to prevent watcher echo
+    crate::file_watcher::mark_self_write(&path);
+    Ok(())
 }
 
 // ===== Editor buffer and undo commands =====
@@ -781,7 +786,7 @@ pub async fn process_key_event(
             }
             // move to next line
             while j < content.len() && bytes[j] != b'\n' { j += 1; }
-            // i = if j < content.len() { j + 1 } else { j };
+            i = if j < content.len() { j + 1 } else { j };
         }
         // Build output
         let mut out = String::with_capacity(content.len() + 8);

@@ -158,9 +158,15 @@ fn create_folder(path: &String) {
 
 fn delete_folder(path: &String) {
     let new_path = Path::new(path);
+    if !new_path.exists() {
+        return;
+    }
     fs::remove_dir_all(new_path)
         .map_err(|e| format!("Failed to delete directory: {}", e))
         .expect("Failed to delete directory files");
+    if !new_path.exists() {
+        return;
+    }
     fs::remove_dir(new_path)
         .map_err(|e| format!("Failed to delete directory: {}", e))
         .expect("Failed to remove directory");
