@@ -11,6 +11,7 @@
   let showSanitizeWarning = false;
   let recentProjects: [string, string];
   let currentTheme: string;
+  let selectedTemplate: string = 'Blank';
 
   async function loadRecentProjects() {
     recentProjects = await invoke("get_recent_projects");
@@ -24,6 +25,10 @@
 
   onMount(loadRecentProjects);
   onMount(getCurrentTheme);
+  onMount(() => {
+    const saved = localStorage.getItem('selectedTemplate');
+    selectedTemplate = saved ? saved : 'Blank';
+  });
 
   async function openProject(event: Event) {
     event.preventDefault();
@@ -77,7 +82,8 @@
 
         const path = await invoke("create_project", {
           path: selectedBasePath,
-          projectName: sanitizedName // Use the sanitized name
+          projectName: sanitizedName, // Use the sanitized name
+          template: selectedTemplate // Pass selected template (mock)
         });
         localStorage.setItem('projectPath', path as string);
         showProjectNameDialog = false;
@@ -113,6 +119,11 @@
     projectName = "rise-project";
     sanitizedName = "rise-project";
     showSanitizeWarning = false;
+  }
+
+  function toggleActiveTemplate(template: string) {
+    selectedTemplate = template;
+    localStorage.setItem('selectedTemplate', selectedTemplate);
   }
 </script>
 
@@ -156,6 +167,22 @@
   {#if showProjectNameDialog}
     <div class="dialog-overlay">
       <div class="dialog">
+        <div class="templates-container">
+          <h2>Project Templates</h2>
+          <ul class="buttons" style="margin: 0">
+            <li><button class="bt bt--temp" class:active={selectedTemplate === 'Blank'} aria-pressed={selectedTemplate === 'Blank'} onclick={() => {
+              toggleActiveTemplate("Blank");
+            }}>Blank</button></li>
+            <li><button class="bt bt--temp" class:active={selectedTemplate === 'NPM'} aria-pressed={selectedTemplate === 'NPM'} onclick={() => {
+              toggleActiveTemplate("NPM");
+            }}>NPM</button></li>
+            <li><button class="bt bt--temp" class:active={selectedTemplate === 'Rust'} aria-pressed={selectedTemplate === 'Rust'} onclick={() => {
+              toggleActiveTemplate("Rust");
+            }}>Rust</button></li>
+<!--            <li></li>-->
+          </ul>
+        </div>
+        <div class="project-name">
         <h2>Create New Project</h2>
         <div class="form-group">
           <input 
@@ -177,6 +204,7 @@
         <div class="dialog-buttons">
           <button class="dialog-button cancel" onclick={cancelProjectCreation}>Cancel</button>
           <button class="dialog-button confirm" onclick={confirmProjectCreation}>Create Project</button>
+        </div>
         </div>
       </div>
     </div>

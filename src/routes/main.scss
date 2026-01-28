@@ -33,25 +33,41 @@
 }
 
 .dialog {
+  display: flex;
+  flex-direction: row;
+  //gap: 5rem;
   background-color: var(--secondary-200);
   border-radius: 8px;
-  padding: 2rem;
+  //padding: 2rem;
   width: 100%;
-  max-width: 500px;
+  max-width: 600px;
   box-shadow: 0 4px 6px var(--background-100);
+}
+
+.templates-container {
+  display: flex;
+  flex-direction: column;
+  width: 35%;
+  background: var(--accent-100);
+  padding: 1rem;
+}
+
+.project-name {
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
+  width: 70%;
 }
 
-.dialog h2 {
+.project-name h2 {
   margin-bottom: 10%;
   color: var(--text-950);
 }
 
 .form-group {
   margin-bottom: 10%;
+  width: 70%;
 }
 
 .form-group input {
@@ -60,6 +76,7 @@
   border-radius: 4px;
   font-size: 1rem;
   font-family: inherit;
+  width: 100%;
 }
 
 .warning-message {
@@ -178,6 +195,22 @@ main {
   background-color: var(--accent-500);
   cursor: pointer;
   text-wrap: pretty;
+
+  &--temp {
+    font-size: 1.2em;
+    //box-shadow: none;
+    background-color: var(--accent-200);
+    //border-radius: 0;
+    margin-left: 0;
+    max-width: 100%;
+    width: 100%;
+
+    &.active {
+      background-color: var(--accent-400);
+      color: var(--text-100);
+      box-shadow: 0 0 0 2px var(--accent-500) inset;
+    }
+  }
 
   &--recent {
     box-shadow: none;
