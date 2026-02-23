@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { invoke } from "@tauri-apps/api/core";
+    import { listen } from "@tauri-apps/api/event";
     import { Terminal } from 'xterm';
     import { FitAddon } from 'xterm-addon-fit';
     import { WebLinksAddon } from 'xterm-addon-web-links';
@@ -14,6 +15,8 @@
     export let host: string;
     export let home: string;
     export let toggleTerminal: () => void;
+        // Allow parent to receive a function to run commands in the active terminal
+        export let exposeRun: ((fn: (command: string, cwd?: string, shellId?: string) => Promise<void>) => void) | undefined;
 
     type TerminalTab = {
         id: string;
@@ -26,6 +29,9 @@
         history: string[];
         historyIndex: number;
         cwd: string;
+        runningProcId: string | null;
+        unlistenData?: (() => void);
+        unlistenExit?: (() => void);
     };
 
     let terminalTabs: TerminalTab[] = [];
@@ -89,6 +95,92 @@
         return terminalTabs.find(t => t.id === activeTerminalTabId) || null;
     }
 
+    function isLongRunning(command: string): boolean {
+        const c = command.trim();
+        return (
+            c.startsWith('nodemon') ||
+            c.startsWith('npm ') ||
+            c.startsWith('yarn ') ||
+            c.startsWith('pnpm ') ||
+            c.startsWith('bun ')
+        );
+    }
+
+    async function runInTerminal(command: string, cwd?: string, shellId?: string) {
+        // Ensure there is an active tab
+        let tab = getActiveTab();
+        const chosenShell = shellId || (selectedShell === 'system' ? defaultShellId : selectedShell);
+        if (!tab) {
+            createTerminalTab(chosenShell);
+            // Wait a tick for tab init
+            await new Promise(r => setTimeout(r, 10));
+            tab = getActiveTab();
+        }
+        if (!tab) return;
+        if (cwd) tab.cwd = cwd;
+        const term = tab.terminal;
+        if (!term) return;
+        isTerminalOpen = true;
+        const toRun = command.trim();
+        if (!toRun) return;
+        let procId = "";
+
+        // If a process is already running in this tab, send the command to its stdin
+        if (tab.runningProcId) {
+            await invoke("write_to_process", { procId: tab.runningProcId, data: toRun + "\n" }).catch(() => {});
+            return;
+        }
+
+        // Use streaming path for long-running commands like nodemon/npm dev
+        if (isLongRunning(toRun)) {
+            console.log('Long-running command detected:', toRun);
+            term.write(toRun + "\r\n");
+            // Attach listeners for this tab
+            if (tab.unlistenData) { try { tab.unlistenData(); } catch {}
+            tab.unlistenData = undefined; }
+            if (tab.unlistenExit) { try { tab.unlistenExit(); } catch {}
+            tab.unlistenExit = undefined; }
+            tab.unlistenData = await listen("process-data", (e: any) => {
+                console.log('process-data', e);
+                const payload = e.payload as any;
+                if (procId == "") {
+                    procId = payload.id;
+                    tab.runningProcId = procId;
+                }
+                term.write(String(payload.data || ''));
+                term.scrollToBottom();
+            });
+            tab.unlistenExit = await listen("process-exit", (e: any) => {
+                console.log('process-exit', e);
+                const payload = e.payload as any;
+                tab.runningProcId = null;
+                term.write(`\r\n[process exited with code ${payload.code}]\r\n` + getPromptFor(tab));
+                term.scrollToBottom();
+                // auto-clean listeners
+                if (tab.unlistenData) { try { tab.unlistenData(); } catch {} tab.unlistenData = undefined; }
+                if (tab.unlistenExit) { try { tab.unlistenExit(); } catch {} tab.unlistenExit = undefined; }
+            });
+            await invoke("start_process", { command: toRun, cwd: tab.cwd, shell: tab.shellId}).catch((err) => {
+                console.log('Starting process:', err);
+                tab.runningProcId = null;
+                term.write(String(err) + "\r\n" + getPromptFor(tab));
+                term.scrollToBottom();
+            });
+            return;
+        }
+
+        // Fallback: one-shot command execution
+        try {
+            term.write(toRun + "\r\n");
+            const result = await invoke("execute_command_with_shell", { command: toRun, cwd: tab.cwd, shell: tab.shellId });
+            term.write(String(result) + "\r\n" + getPromptFor(tab));
+            term.scrollToBottom();
+        } catch (e) {
+            term.write(String(e) + "\r\n" + getPromptFor(tab));
+            term.scrollToBottom();
+        }
+    }
+
     function createTerminalTab(shellId: string) {
         const id = `tab-${Date.now()}-${Math.floor(Math.random()*10000)}`;
         const cwd = projectPath || home || '';
@@ -103,6 +195,7 @@
             history: [],
             historyIndex: -1,
             cwd,
+            runningProcId: null,
         };
         terminalTabs = [...terminalTabs, tab];
         activeTerminalTabId = id;
@@ -138,6 +231,12 @@
             const key = ev.key;
 
             if (key === 'Enter') {
+                // If a process is running, forward newline to it
+                if (tab.runningProcId) {
+                    term.write('\r\n');
+                    await invoke('write_to_process', { proc_id: tab.runningProcId, data: '\n' }).catch(() => {});
+                    return;
+                }
                 term.write('\r\n');
                 const command = tab.commandBuffer.trim();
                 if (command) {
@@ -145,28 +244,16 @@
                     tab.historyIndex = tab.history.length;
                     if (command.startsWith('cd ')) {
                         await handleCdCommandFor(tab, command);
+                        term.write(getPromptFor(tab));
+                        term.scrollToBottom();
                     } else {
-                        await invoke("execute_command_with_shell", { command, cwd: tab.cwd, shell: tab.shellId })
-                            .then((result) => {
-                                term.write(`${result}\r\n${getPromptFor(tab)}`);
-                                term.scrollToBottom();
-                            })
-                            .catch(error => {
-                                term.write(`${error}\r\n${getPromptFor(tab)}`);
-                                term.scrollToBottom();
-                            });
+                        await runInTerminal(command);
                     }
                 } else {
                     term.write(getPromptFor(tab));
                     term.scrollToBottom();
                 }
                 tab.commandBuffer = '';
-            } else if (key === 'Backspace') {
-                if (tab.commandBuffer.length > 0) {
-                    tab.commandBuffer = tab.commandBuffer.slice(0, -1);
-                    term.write('\b \b');
-                    term.scrollToBottom();
-                }
             } else if (key === 'ArrowUp') {
                 if (tab.historyIndex > 0) {
                     tab.historyIndex--;
@@ -187,11 +274,77 @@
                 term.write(getPromptFor(tab));
                 tab.commandBuffer = '';
                 term.scrollToBottom();
-            } else if (!ev.ctrlKey && !ev.altKey && !ev.metaKey && key.length === 1 && key >= ' ' && key <= '~') {
-                tab.commandBuffer += key;
-                term.write(key);
+            } else if (ev.ctrlKey && key.toLowerCase() === 'c') {
+                console.log(ev, tab.runningProcId);
+                // Ctrl+C: try graceful interrupt (send ^C), then hard kill if still running shortly after
+                if (tab.runningProcId) {
+                    await invoke('kill_process', { procId: tab.runningProcId }).catch(() => {});
+                }
+            }
+            // NOTE: We intentionally do NOT handle printable characters here.
+            // Text input (including paste) is handled in the onData listener below
+            // so that pastes correctly update commandBuffer.
+        });
+
+        // Handle text input and paste uniformly so commandBuffer stays in sync with xterm
+        term.onData((data) => {
+            if (!data) return;
+            // When a process is running, forward all input to it directly
+            if (tab.runningProcId) {
+                invoke('write_to_process', { proc_id: tab.runningProcId, data }).catch(() => {});
+                // local echo to feel responsive
+                if (data !== '\x03') { // not Ctrl+C
+                    term.write(data);
+                }
+                return;
+            }
+            // Handle special/control sequences explicitly when idle
+            if (data === '\x7f') { // Backspace
+                if (tab.commandBuffer.length > 0) {
+                    tab.commandBuffer = tab.commandBuffer.slice(0, -1);
+                    term.write('\b \b');
+                    term.scrollToBottom();
+                }
+                return;
+            }
+            if (data === '\r') { // Enter is handled in onKey to run the command
+                return;
+            }
+            if (data.startsWith('\x1b')) { // Escape sequences (arrows, etc.) handled in onKey
+                return;
+            }
+
+            // For paste or normal typing, sanitize newlines to spaces to avoid unintended execution
+            const sanitized = data.replace(/[\r\n]+/g, ' ');
+            if (sanitized.length > 0) {
+                tab.commandBuffer += sanitized;
+                term.write(sanitized);
                 term.scrollToBottom();
             }
+        });
+
+        // Add explicit paste shortcut support (Ctrl+Shift+V on Linux/Windows, Cmd+V fallback on macOS)
+        term.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
+            const isCtrlShiftV = ev.ctrlKey && ev.shiftKey && ev.key.toLowerCase() === 'v';
+            const isCmdV = ev.metaKey && !ev.shiftKey && ev.key.toLowerCase() === 'v';
+            if (isCtrlShiftV || isCmdV) {
+                if (navigator.clipboard && navigator.clipboard.readText) {
+                    navigator.clipboard.readText().then((clip) => {
+                        if (!clip) return;
+                        const sanitized = clip.replace(/[\r\n]+/g, ' ');
+                        if (sanitized.length > 0) {
+                            tab.commandBuffer += sanitized;
+                            term.write(sanitized);
+                            term.scrollToBottom();
+                        }
+                    }).catch(() => {
+                        // If clipboard read fails, let default behavior try
+                    });
+                    // Prevent default to avoid double paste
+                    return false;
+                }
+            }
+            return true;
         });
 
         tab.terminal = term;
@@ -272,11 +425,15 @@
         setTimeout(() => { tab?.fitAddon?.fit(); tab?.terminal?.focus(); tab?.terminal?.scrollToBottom(); }, 0);
     }
 
-    function closeTerminalTab(id: string, e?: MouseEvent) {
+    async function closeTerminalTab(id: string, e?: MouseEvent) {
         if (e) e.stopPropagation();
         const idx = terminalTabs.findIndex(t => t.id === id);
         if (idx === -1) return;
         const closing = terminalTabs[idx];
+        // Cleanup any running process and listeners
+        if (closing.unlistenData) { try { closing.unlistenData(); } catch {} }
+        if (closing.unlistenExit) { try { closing.unlistenExit(); } catch {} }
+        if (closing.runningProcId) { let r = await invoke('kill_process', { proc_id: closing.runningProcId }).catch(() => {}); console.log(r)}
         closing.terminal?.dispose();
         terminalTabs = terminalTabs.filter((t, i) => i !== idx);
         if (activeTerminalTabId === id) {
@@ -341,6 +498,11 @@
         // Create initial terminal tab if terminal is open
         if (isTerminalOpen && terminalTabs.length === 0) {
             createTerminalTab(selectedShell || defaultShellId);
+        }
+
+        // Expose runner to parent if requested
+        if (exposeRun) {
+            try { exposeRun(runInTerminal); } catch {}
         }
 
         return () => {

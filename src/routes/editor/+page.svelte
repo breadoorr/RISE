@@ -7,7 +7,7 @@
     import Editor from "./components/Editor.svelte";
     import Menu from "./components/Menu.svelte";
     import type { FileEntry } from '$lib/utils/types';
-    import {fileStore, refreshPathInStore} from '$lib/stores/fileStore';
+    import {fileStore, refreshPathInStore, setProjectInfo} from '$lib/stores/fileStore';
     import { selectFile as selectFileInStore } from '$lib/stores/fileStore';
     import { loadFiles as loadFilesUtil, updateAllFiles as flattenFilesUtil } from '$lib/utils/fileLoader';
     import {
@@ -36,7 +36,8 @@
         "mocha"
     ]
 
-    let PROJECTS: [string, string];
+    import type { ProjectEntry, RunConfig } from '$lib/utils/types';
+    let PROJECTS: ProjectEntry[] = [];
 
     let projectPath: string | null = null;
     let projectName: string | null = null;
@@ -67,6 +68,11 @@
     let isSettingOpen: boolean = false;
     let actions: string[] = [];
     let projects: boolean = false;
+    let runMenu: boolean = false;
+    let currentRunConfigId: string | null = null;
+    let currentRunConfigName: string = '';
+    let runActions: string[] = [];
+    let runNameToId: Record<string, string> = {};
     let currentTheme: string;
 
     // user/system info
@@ -77,6 +83,91 @@
     // Reference to toggleTerminal function from Terminal component
     let toggleTerminal: () => void;
     let toggleFileMenu: (event: Event, isContextMenu: boolean, isDir: boolean, path: string, currentPath: string | null) => void;
+    let runInTerminalFn: ((command: string, cwd?: string, shellId?: string) => Promise<void>) | null = null;
+
+    function prepareRunActions() {
+        try {
+            const state = get(fileStore) as any;
+            const proj = state?.project as { run_configs?: RunConfig[] } | undefined;
+            runActions = [];
+            runNameToId = {};
+            if (proj?.run_configs) {
+                for (const rc of proj.run_configs) {
+                    runActions.push(rc.name);
+                    runNameToId[rc.name] = rc.id;
+                }
+            }
+        } catch {}
+    }
+
+    async function openRunMenu(e: MouseEvent) {
+        runMenu = !runMenu;
+        isSettingOpen = false;
+        prepareRunActions();
+        x = e.clientX;
+        y = 30;
+    }
+
+    async function applySelectedRunByName(name: string) {
+        const id = runNameToId[name] || name;
+        if (!projectPath) return;
+        try {
+            await invoke('set_selected_run_config', { path: projectPath, runConfigId: id });
+            currentRunConfigId = id;
+            currentRunConfigName = name;
+        } catch (e) {
+            console.error('Failed to set selected run config', e);
+        }
+    }
+
+    function getActiveFilePath(): string | null {
+        if (activeFileIndex >= 0 && activeFileIndex < openFiles.length) {
+            return openFiles[activeFileIndex]?.path || null;
+        }
+        return selectedFile || null;
+    }
+
+    function buildRunCommandForCurrentFile(): { cmd: string, cwd: string } | null {
+        const filePath = getActiveFilePath();
+        if (!filePath || !projectPath) return null;
+        const lower = filePath.toLowerCase();
+        const quote = (s: string) => s.includes(' ') ? `"${s}"` : s;
+        if (lower.endsWith('.js')) return { cmd: `node ${quote(filePath)}`, cwd: projectPath };
+        if (lower.endsWith('.ts')) return { cmd: `npx ts-node ${quote(filePath)}`, cwd: projectPath };
+        if (lower.endsWith('.py')) return { cmd: `python3 ${quote(filePath)}`, cwd: projectPath };
+        if (lower.endsWith('.sh')) return { cmd: `bash ${quote(filePath)}`, cwd: projectPath };
+        if (lower.endsWith('.rs')) return { cmd: `cargo run`, cwd: projectPath };
+        if (lower.endsWith('.mjs')) return { cmd: `node ${quote(filePath)}`, cwd: projectPath };
+        if (lower.endsWith('.cjs')) return { cmd: `node ${quote(filePath)}`, cwd: projectPath };
+        return { cmd: `echo Unsupported file type for run: ${quote(filePath)}`, cwd: projectPath };
+    }
+
+    async function handleRunClick() {
+        try {
+            if (!runInTerminalFn) return;
+            const stateAny: any = get(fileStore);
+            const proj = stateAny?.project as { run_configs?: RunConfig[], path?: string, project_type?: string } | undefined;
+            const rcs = proj?.run_configs || [];
+            let chosen = rcs.find((r) => r.id === currentRunConfigId);
+            if (!chosen && rcs.length > 0) {
+                chosen = rcs[0];
+                currentRunConfigId = chosen.id;
+                currentRunConfigName = chosen.name;
+            }
+            if (!chosen) return;
+            let cmdToRun = chosen.command;
+            let cwd = chosen.cwd || proj?.path || projectPath || '';
+            if (cmdToRun === 'run_current_file') {
+                const built = buildRunCommandForCurrentFile();
+                if (!built) return;
+                cmdToRun = built.cmd;
+                cwd = built.cwd;
+            }
+            await runInTerminalFn(cmdToRun, cwd);
+        } catch (e) {
+            console.error('Run failed', e);
+        }
+    }
 
     // React to centralized fileStore changes and update local state (useEffect-like)
     $: (function () {
@@ -123,8 +214,30 @@
             // Inform backend that the project is opened so watcher starts
             try { await invoke('open_project', { path: projectPath }); } catch (e) { console.error('open_project failed', e); }
 
+            // Fetch enriched project info (name, type, run configs)
+            let info: any = null;
+            try { info = await invoke('get_project_info', { path: projectPath }); } catch (e) { console.error('get_project_info failed', e); }
+
             currentPath = projectPath;
-            projectName = await basename(projectPath);
+            if (info && info.name && info.path) {
+                setProjectInfo(info);
+                projectName = info.name;
+                projectPath = info.path;
+                try {
+                    const sel: string | null = await invoke('get_selected_run_config', { path: projectPath });
+                    const rcs: any[] = Array.isArray(info.run_configs) ? info.run_configs : [];
+                    if (sel) {
+                        const found = rcs.find((r) => r.id === sel);
+                        currentRunConfigId = sel;
+                        currentRunConfigName = found ? found.name : '';
+                    } else if (rcs.length > 0) {
+                        currentRunConfigId = rcs[0].id;
+                        currentRunConfigName = rcs[0].name;
+                    }
+                } catch (e) { console.error('get_selected_run_config failed', e); }
+            } else {
+                projectName = await basename(projectPath);
+            }
             const rootEntry: FileEntry = {
                 path: projectPath,
                 name: projectName || projectPath,
@@ -166,7 +279,43 @@
             try {
                 const state = get(fileStore) as { projectPath: string | null };
                 if (state.projectPath) {
+                    // Refresh file tree
                     await refreshPathInStore(state.projectPath);
+                    // Refresh project info (name/type/run configs) so run menu reflects package.json/Cargo.toml changes
+                    try {
+                        const info: any = await invoke('get_project_info', { path: state.projectPath });
+                        if (info && info.name && info.path) {
+                            setProjectInfo(info);
+                            // Update current run config label/id if selection changed or became invalid
+                            const rcs: any[] = Array.isArray(info.run_configs) ? info.run_configs : [];
+                            try {
+                                const sel: string | null = await invoke('get_selected_run_config', { path: state.projectPath });
+                                if (sel && rcs.find((r) => r.id === sel)) {
+                                    currentRunConfigId = sel;
+                                    const found = rcs.find((r) => r.id === sel);
+                                    currentRunConfigName = found ? found.name : '';
+                                } else if (rcs.length > 0) {
+                                    // Fallback to the first available run config without persisting immediately
+                                    currentRunConfigId = rcs[0].id;
+                                    currentRunConfigName = rcs[0].name;
+                                } else {
+                                    currentRunConfigId = null;
+                                    currentRunConfigName = '';
+                                }
+                            } catch (e) {
+                                // If backend selection unavailable, fallback to first
+                                if (Array.isArray(info.run_configs) && info.run_configs.length > 0) {
+                                    currentRunConfigId = info.run_configs[0].id;
+                                    currentRunConfigName = info.run_configs[0].name;
+                                } else {
+                                    currentRunConfigId = null;
+                                    currentRunConfigName = '';
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.error('get_project_info on fs-changed failed', e);
+                    }
                 }
             } catch (e) {
                 console.error('Failed to handle fs-changed event', e);
@@ -296,11 +445,20 @@
 
 <Menu Actions={actions} x={x} y={y} isMenuOpen={isSettingOpen} triggerAction={(action) => {
     if (projects) {
-        localStorage.setItem('projectPath', PROJECTS.find(p => p[1] === action)[0])
-        window.location.href = "/editor";
+        const target = PROJECTS.find(p => p.name === action);
+        if (target) {
+            localStorage.setItem('projectPath', target.path)
+            window.location.href = "/editor";
+        }
     } else {
         if (action === "Theme") changeTheme();
     }
+}} />
+
+<!-- Run config selector menu -->
+<Menu Actions={runActions} x={x} y={y} isMenuOpen={runMenu} triggerAction={async (action) => {
+    await applySelectedRunByName(action);
+    runMenu = false;
 }} />
 
 <div class="window-title">
@@ -308,8 +466,7 @@
         isSettingOpen = !isSettingOpen;
         x = e.clientX;
         y = 30;
-        actions = PROJECTS;
-        actions = actions.map(p => p[1]);
+        actions = PROJECTS.map(p => p.name);
         projects = true;
     }}>
         {projectName ?? 'Untitled'}
@@ -319,8 +476,12 @@
     <button class="window-title--button">
         <Hammer size={20} />
     </button>
-    <button class="window-title--button">
+    <button class="window-title--button" on:click={handleRunClick}>
         <Play size={20} />
+    </button>
+    <button class="window-title--button" on:click={openRunMenu}>
+        {currentRunConfigName || 'Select run config'}
+        <ChevronDown class="chevron-down" size={16} />
     </button>
     <button class="window-title--button">
         <BugIcon size={16} />
@@ -389,7 +550,7 @@
         onTabClose={(index, event) => closeFile(index, event)}
     />
 
-    <Terminal bind:isTerminalOpen bind:terminalHeight {projectPath} {user} {host} {home} bind:toggleTerminal />
+    <Terminal bind:isTerminalOpen bind:terminalHeight {projectPath} {user} {host} {home} bind:toggleTerminal exposeRun={(fn) => { runInTerminalFn = fn; }} />
 
     <div class="editor-footer">
         <div class="cursor-info">

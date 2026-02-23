@@ -9,7 +9,8 @@
   let projectNameInput: HTMLInputElement;
   let sanitizedName = "";
   let showSanitizeWarning = false;
-  let recentProjects: [string, string];
+  import type { ProjectEntry } from '$lib/utils/types';
+    let recentProjects: ProjectEntry[];
   let currentTheme: string;
   let selectedTemplate: string = 'Blank';
 
@@ -147,13 +148,13 @@
         <ul class="buttons">
           {#each recentProjects as recentProject}
             <li><button class="bt bt--recent" onclick={() => {
-              localStorage.setItem('projectPath', recentProject[0])
+              localStorage.setItem('projectPath', recentProject.path)
               window.location.href = "/editor";
             }}><span>
-          {recentProject[1]}
+          {recentProject.name}
         </span>
               <br>
-              <span class="path">{recentProject[0]}</span>
+              <span class="path">{recentProject.path}</span>
             </button>
             </li>
           {/each}

@@ -1,16 +1,18 @@
 import { writable } from 'svelte/store';
-import type { FileEntry } from '$lib/utils/types';
+import type { FileEntry, ProjectInfo } from '$lib/utils/types';
 import { invoke } from '@tauri-apps/api/core';
 import { basename, dirname } from '@tauri-apps/api/path';
 
 // Initialize the store with default values
 export const fileStore = writable<{
     files: FileEntry[];
-    projectPath: string | null;
+    projectPath: string | null; // kept for backward compatibility
+    project: ProjectInfo | null;
     selectedFile: FileEntry | null;
 }>({
     files: [],
     projectPath: null,
+    project: null,
     selectedFile: null,
 });
 
@@ -49,6 +51,14 @@ export async function loadFilesIntoStore(projectPath: string | null) {
     } catch (error) {
         console.error('Failed to load files:', error);
     }
+}
+
+export function setProjectInfo(project: ProjectInfo) {
+    fileStore.update((state) => ({
+        ...state,
+        project,
+        projectPath: project.path,
+    }));
 }
 
 // Incrementally refresh a directory or the parent of a file

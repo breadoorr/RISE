@@ -1,17 +1,29 @@
+use crate::highlight::{calculate_edit, escape_html, highlight_ast};
+use crate::project::{Project, ProjectType, RunConfig};
+use crate::theme::reload_theme;
+use hostname;
+use lazy_static::lazy_static;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::prelude::CommandExt;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
-use hostname;
-use std::process::Command;
-use lazy_static::lazy_static;
-use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use streaming_iterator::StreamingIterator;
-use crate::highlight::{escape_html, calculate_edit, highlight_ast};
-use serde_json;
-use crate::theme::reload_theme;
+use tauri::AppHandle;
 use tauri::Emitter;
+use nix;
+#[cfg(target_family = "unix")]
+use nix::sys::signal::{killpg, Signal};
+#[cfg(target_family = "unix")]
+use nix::unistd::Pid;
 
 #[derive(Clone, Debug)]
 struct EditEntry {
@@ -27,18 +39,43 @@ pub struct EditorBuffer {
 lazy_static! {
     pub static ref EDITOR_BUFFERS: Mutex<HashMap<String, EditorBuffer>> = Mutex::new(HashMap::new());
     pub static ref CONFIG_FILE: String = Path::new("/Users/ddorabble/RISE").to_string_lossy().into_owned();
+    static ref APP_CONFIG: Mutex<AppConfig> = Mutex::new(load_config());
+    static ref CONFIG_DIRTY: Mutex<bool> = Mutex::new(false);
+    // Long-running process registry: id -> child and stdin
+    static ref PROC_CHILDREN: Mutex<HashMap<String, Arc<Mutex<Child>>>> = Mutex::new(HashMap::new());
+    static ref PROC_STDIN: Mutex<HashMap<String, ChildStdin>> = Mutex::new(HashMap::new());
+    // Separate PID registry to avoid locking the Child while waiting in another thread
+    static ref PROC_PIDS: Mutex<HashMap<String, i32>> = Mutex::new(HashMap::new());
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProjectEntry {
+    name: String,
+    path: String,
+    project_type: ProjectType,
+    run_configs: Vec<RunConfig>,
+    selected_run_config_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AppConfig {
-    recent_projects: Vec<(String, String)>,
+    recent_projects: Vec<ProjectEntry>,
     theme: String,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
-        AppConfig { recent_projects: Vec::new(), theme: "default".to_string() }
+        AppConfig {
+            recent_projects: Vec::new(),
+            theme: "default".to_string(),
+        }
     }
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct OldAppConfig {
+    recent_projects: Vec<(String, String)>,
+    theme: String,
 }
 
 fn load_config() -> AppConfig {
@@ -56,60 +93,185 @@ fn load_config() -> AppConfig {
         let _ = save_config(&cfg);
         return cfg;
     }
-    match serde_json::from_str::<AppConfig>(&content) {
-        Ok(mut cfg) => {
-            // Backfill defaults if fields are missing
-            if cfg.theme.is_empty() { cfg.theme = "default".to_string(); }
-            if cfg.recent_projects.len() > 10 { cfg.recent_projects.truncate(10); }
-            cfg
+    if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) {
+        if cfg.theme.is_empty() {
+            cfg.theme = "default".to_string();
         }
-        Err(_) => {
-            // If existing file is not valid JSON (from previous versions), reset to defaults
-            let cfg = AppConfig::default();
-            let _ = save_config(&cfg);
-            cfg
+        if cfg.recent_projects.len() > 10 {
+            cfg.recent_projects.truncate(10);
         }
+        return cfg;
     }
+    // Try to migrate from old tuple-based format
+    if let Ok(old) = serde_json::from_str::<OldAppConfig>(&content) {
+        let mut new_cfg = AppConfig {
+            recent_projects: Vec::new(),
+            theme: if old.theme.is_empty() {
+                "default".to_string()
+            } else {
+                old.theme
+            },
+        };
+        for (path_str, name_str) in old.recent_projects.into_iter().take(10) {
+            let proj = Project::detect(&path_str);
+            let entry = ProjectEntry {
+                name: if name_str.is_empty() {
+                    proj.name.clone()
+                } else {
+                    name_str
+                },
+                path: proj.path.clone(),
+                project_type: proj.project_type.clone(),
+                run_configs: proj.run_configs.clone(),
+                selected_run_config_id: None,
+            };
+            new_cfg.recent_projects.push(entry);
+        }
+        let _ = save_config(&new_cfg);
+        return new_cfg;
+    }
+    // Fallback: defaults
+    let cfg = AppConfig::default();
+    let _ = save_config(&cfg);
+    cfg
 }
 
 fn save_config(cfg: &AppConfig) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(cfg).map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(Path::new(&*CONFIG_FILE).join("config.json"), json).map_err(|e| format!("Failed to write config file: {}", e))
+    let json = serde_json::to_string_pretty(cfg)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(Path::new(&*CONFIG_FILE).join("config.json"), json)
+        .map_err(|e| format!("Failed to write config file: {}", e))
+}
+
+pub fn flush_app_config() -> Result<(), String> {
+    let mut dirty = CONFIG_DIRTY.lock().unwrap();
+    if !*dirty {
+        return Ok(());
+    }
+    let cfg = APP_CONFIG.lock().unwrap();
+    let res = save_config(&cfg);
+    if res.is_ok() {
+        *dirty = false;
+    }
+    res
+}
+
+fn with_config_mut<R>(f: impl FnOnce(&mut AppConfig) -> R) -> R {
+    let mut cfg = APP_CONFIG.lock().unwrap();
+    let out = f(&mut cfg);
+    let mut dirty = CONFIG_DIRTY.lock().unwrap();
+    *dirty = true;
+    out
+}
+
+fn with_config<R>(f: impl FnOnce(&AppConfig) -> R) -> R {
+    let cfg = APP_CONFIG.lock().unwrap();
+    f(&cfg)
 }
 
 fn update_recent_project(project_name: &str, project_path: &str) -> Result<(), String> {
-    let mut cfg = load_config();
-    // remove existing occurrences
-    cfg.recent_projects.retain(|(p, _)| p != project_path);
-    // insert at front
-    cfg.recent_projects.insert(0, (project_path.to_string(), project_name.to_string()));
-    // cap at 10
-    if cfg.recent_projects.len() > 10 { cfg.recent_projects.truncate(10); }
-    save_config(&cfg)
+    with_config_mut(|cfg| {
+        // Rebuild entry using auto-detected details
+        let detected = Project::detect(project_path);
+        // Preserve previous selection if present and still valid
+        let mut prev_selected: Option<String> = None;
+        if let Some(existing) = cfg.recent_projects.iter().find(|e| e.path == project_path) {
+            if let Some(sel) = &existing.selected_run_config_id {
+                if detected.run_configs.iter().any(|rc| &rc.id == sel) {
+                    prev_selected = Some(sel.clone());
+                }
+            }
+        }
+        // Remove all existing occurrences of this path
+        cfg.recent_projects.retain(|e| e.path != project_path);
+        // Construct new entry
+        let entry = ProjectEntry {
+            name: if project_name.is_empty() {
+                detected.name.clone()
+            } else {
+                project_name.to_string()
+            },
+            path: detected.path.clone(),
+            project_type: detected.project_type.clone(),
+            run_configs: detected.run_configs.clone(),
+            selected_run_config_id: prev_selected,
+        };
+        // Insert at front
+        cfg.recent_projects.insert(0, entry);
+        // Cap at 10
+        if cfg.recent_projects.len() > 10 {
+            cfg.recent_projects.truncate(10);
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
-pub fn get_recent_projects() -> Result<Vec<(String, String)>, String> {
-    let cfg = load_config();
-    Ok(cfg.recent_projects)
+pub fn get_recent_projects() -> Result<Vec<ProjectEntry>, String> {
+    Ok(with_config(|cfg| cfg.recent_projects.clone()))
+}
+
+#[tauri::command]
+pub fn get_selected_run_config(path: String) -> Result<Option<String>, String> {
+    Ok(with_config(|cfg| {
+        cfg.recent_projects
+            .iter()
+            .find(|e| e.path == path)
+            .and_then(|e| e.selected_run_config_id.clone())
+    }))
+}
+
+#[tauri::command]
+pub fn set_selected_run_config(path: String, run_config_id: String) -> Result<(), String> {
+    let mut invalid = false;
+    with_config_mut(|cfg| {
+        if let Some(entry) = cfg.recent_projects.iter_mut().find(|e| e.path == path) {
+            if entry.run_configs.iter().any(|rc| rc.id == run_config_id) {
+                entry.selected_run_config_id = Some(run_config_id.clone());
+            } else {
+                invalid = true;
+            }
+        } else {
+            let detected = Project::detect(&path);
+            if detected.run_configs.iter().any(|rc| rc.id == run_config_id) {
+                cfg.recent_projects.retain(|e| e.path != path);
+                cfg.recent_projects.insert(
+                    0,
+                    ProjectEntry {
+                        name: detected.name.clone(),
+                        path: detected.path.clone(),
+                        project_type: detected.project_type.clone(),
+                        run_configs: detected.run_configs.clone(),
+                        selected_run_config_id: Some(run_config_id.clone()),
+                    },
+                );
+                if cfg.recent_projects.len() > 10 {
+                    cfg.recent_projects.truncate(10);
+                }
+            } else {
+                invalid = true;
+            }
+        }
+    });
+    if invalid {
+        return Err("Invalid run_config_id for project".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
 pub fn get_app_theme() -> String {
-    let cfg = load_config();
-    cfg.theme.clone()
+    with_config(|cfg| cfg.theme.clone())
 }
 
 #[tauri::command]
 pub fn update_app_theme(app: tauri::AppHandle, new_theme: String) {
-    let mut cfg = load_config();
-    cfg.theme = new_theme;
-    save_config(&cfg).expect("failed to change theme");
+    with_config_mut(|cfg| {
+        cfg.theme = new_theme.clone();
+    });
     reload_theme();
     // Emit a global event so the frontend can re-render highlighted text
-    let _ = app.emit("theme-changed", cfg.theme.clone());
-    cfg = load_config();
-    println!("Theme changed to {}", cfg.theme);
+    let _ = app.emit("theme-changed", new_theme);
 }
 
 #[derive(Serialize, Deserialize)]
@@ -127,50 +289,80 @@ pub struct SystemInfo {
 }
 
 #[tauri::command]
-pub async fn create_project(path: Option<String>, project_name: Option<String>, template: Option<String>) -> Result<String, String> {
+pub async fn create_project(
+    path: Option<String>,
+    project_name: Option<String>,
+    template: Option<String>,
+) -> Result<String, String> {
     match path {
         Some(p) => {
             let base_path = Path::new(&p);
             if !base_path.exists() {
-                fs::create_dir_all(base_path).map_err(|e| format!("Failed to create base directory: {}", e))?;
+                fs::create_dir_all(base_path)
+                    .map_err(|e| format!("Failed to create base directory: {}", e))?;
             }
             let folder_name = project_name
                 .unwrap_or_else(|| "rise-project".to_string())
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect::<String>()
                 .trim()
                 .to_string();
-            let folder_name = if folder_name.is_empty() { "rise-project".to_string() } else { folder_name };
+            let folder_name = if folder_name.is_empty() {
+                "rise-project".to_string()
+            } else {
+                folder_name
+            };
             let chosen_template = template.unwrap_or_else(|| "Blank".to_string());
             println!("Creating project with template: {}", chosen_template);
             let project_path = base_path.join(&folder_name);
-            fs::create_dir_all(&project_path).map_err(|e| format!("Failed to create project directory: {}", e))?;
+            fs::create_dir_all(&project_path)
+                .map_err(|e| format!("Failed to create project directory: {}", e))?;
             if chosen_template == "NPM" {
                 let src_path = project_path.join("src");
                 if !src_path.exists() {
-                    fs::create_dir_all(&src_path).map_err(|e| format!("Failed to create src directory: {}", e))?;
+                    fs::create_dir_all(&src_path)
+                        .map_err(|e| format!("Failed to create src directory: {}", e))?;
                 }
                 let index_path = src_path.join("index.js");
                 let index_content = "// Main entry point for your project\n\nconsole.log('Hello from RISE project!');\n";
-                fs::write(&index_path, index_content).map_err(|e| format!("Failed to create index.js file: {}", e))?;
+                fs::write(&index_path, index_content)
+                    .map_err(|e| format!("Failed to create index.js file: {}", e))?;
                 let readme_path = project_path.join("README.md");
-                let readme_content = format!("# {} Project\n\nThis project was created with RISE.\n\nTemplate (mock): {}\n", folder_name, chosen_template);
-                fs::write(&readme_path, readme_content).map_err(|e| format!("Failed to create README.md file: {}", e))?;
+                let readme_content = format!(
+                    "# {} Project\n\nThis project was created with RISE.\n\nTemplate (mock): {}\n",
+                    folder_name, chosen_template
+                );
+                fs::write(&readme_path, readme_content)
+                    .map_err(|e| format!("Failed to create README.md file: {}", e))?;
             } else if chosen_template == "Rust" {
                 let src_path = project_path.join("src");
                 if !src_path.exists() {
-                    fs::create_dir_all(&src_path).map_err(|e| format!("Failed to create src directory: {}", e))?;
+                    fs::create_dir_all(&src_path)
+                        .map_err(|e| format!("Failed to create src directory: {}", e))?;
                 }
                 let main_path = src_path.join("main.rs");
                 let main_content = "// Main entry point for your project\n\nfn main() {\n    println!(\"Hello from RISE project!\");\n}\n";
-                fs::write(&main_path, main_content).map_err(|e| format!("Failed to create main.rs file: {}", e))?;
+                fs::write(&main_path, main_content)
+                    .map_err(|e| format!("Failed to create main.rs file: {}", e))?;
             }
             // Ensure config exists and update recent projects list
-            update_recent_project(folder_name.as_str(), project_path.to_str().unwrap_or_default())?;
-            project_path.to_str().map(|s| s.to_string()).ok_or_else(|| "Failed to convert project path to string".to_string())
-        },
-        None => Err("No path provided".to_string())
+            update_recent_project(
+                folder_name.as_str(),
+                project_path.to_str().unwrap_or_default(),
+            )?;
+            project_path
+                .to_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "Failed to convert project path to string".to_string())
+        }
+        None => Err("No path provided".to_string()),
     }
 }
 
@@ -179,13 +371,25 @@ pub async fn open_project(app: tauri::AppHandle, path: Option<String>) -> Result
     match path {
         Some(p) => {
             // Ensure config exists and update the recent projects list
-            update_recent_project(Path::new(&p).file_name().unwrap().to_str().unwrap_or("Unknown"), &p)?;
+            update_recent_project(
+                Path::new(&p)
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap_or("Unknown"),
+                &p,
+            )?;
             // Start/point the file watcher to this project path
             crate::file_watcher::set_watched_path(app, p.clone());
             Ok(p)
-        },
-        None => Err("No path provided".to_string())
+        }
+        None => Err("No path provided".to_string()),
     }
+}
+
+#[tauri::command]
+pub async fn get_project_info(path: String) -> Result<Project, String> {
+    Ok(Project::detect(&path))
 }
 
 #[tauri::command]
@@ -206,7 +410,13 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
 pub async fn open_buffer(path: String) -> Result<String, String> {
     let content = fs::read_to_string(&path).unwrap_or_default();
     let mut map = EDITOR_BUFFERS.lock().unwrap();
-    map.insert(path.clone(), EditorBuffer { content: content.clone(), undo_stack: Vec::new() });
+    map.insert(
+        path.clone(),
+        EditorBuffer {
+            content: content.clone(),
+            undo_stack: Vec::new(),
+        },
+    );
     Ok(content)
 }
 
@@ -217,7 +427,13 @@ pub async fn get_buffer(path: String) -> Result<String, String> {
         return Ok(buf.content.clone());
     }
     // initialize empty if missing
-    map.insert(path.clone(), EditorBuffer { content: String::new(), undo_stack: Vec::new() });
+    map.insert(
+        path.clone(),
+        EditorBuffer {
+            content: String::new(),
+            undo_stack: Vec::new(),
+        },
+    );
     Ok(String::new())
 }
 
@@ -226,24 +442,39 @@ fn is_boundary(s: &str, idx: usize) -> bool {
 }
 
 #[tauri::command]
-pub async fn apply_edit(path: String, start: usize, end: usize, new_text: String) -> Result<String, String> {
+pub async fn apply_edit(
+    path: String,
+    start: usize,
+    end: usize,
+    new_text: String,
+) -> Result<String, String> {
     let mut map = EDITOR_BUFFERS.lock().unwrap();
-    let buf = map.entry(path.clone()).or_insert(EditorBuffer { content: String::new(), undo_stack: Vec::new() });
+    let buf = map.entry(path.clone()).or_insert(EditorBuffer {
+        content: String::new(),
+        undo_stack: Vec::new(),
+    });
     let len = buf.content.len();
     let s = start.min(len);
     let e = end.min(len);
-    if s > e { return Err("start greater than end".to_string()); }
+    if s > e {
+        return Err("start greater than end".to_string());
+    }
     if !is_boundary(&buf.content, s) || !is_boundary(&buf.content, e) {
         return Err("start/end are not at UTF-8 character boundaries".to_string());
     }
     let old_text = &buf.content[s..e];
     // push undo entry (snapshot of full content before edit)
-    let entry = EditEntry { prev_content: buf.content.clone() };
-    if buf.undo_stack.len() >= 50 { buf.undo_stack.remove(0); }
+    let entry = EditEntry {
+        prev_content: buf.content.clone(),
+    };
+    if buf.undo_stack.len() >= 50 {
+        buf.undo_stack.remove(0);
+    }
     buf.undo_stack.push(entry);
 
     // apply edit
-    let mut new_content = String::with_capacity(buf.content.len() - old_text.len() + new_text.len());
+    let mut new_content =
+        String::with_capacity(buf.content.len() - old_text.len() + new_text.len());
     new_content.push_str(&buf.content[..s]);
     new_content.push_str(&new_text);
     new_content.push_str(&buf.content[e..]);
@@ -266,14 +497,23 @@ pub async fn undo_last_change(path: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn apply_full_update(path: String, new_content: String) -> Result<String, String> {
     let mut map = EDITOR_BUFFERS.lock().unwrap();
-    let buf = map.entry(path.clone()).or_insert(EditorBuffer { content: String::new(), undo_stack: Vec::new() });
+    let buf = map.entry(path.clone()).or_insert(EditorBuffer {
+        content: String::new(),
+        undo_stack: Vec::new(),
+    });
 
     // If unchanged, return current content
-    if buf.content == new_content { return Ok(buf.content.clone()); }
+    if buf.content == new_content {
+        return Ok(buf.content.clone());
+    }
 
     // Push undo snapshot
-    let entry = EditEntry { prev_content: buf.content.clone() };
-    if buf.undo_stack.len() >= 50 { buf.undo_stack.remove(0); }
+    let entry = EditEntry {
+        prev_content: buf.content.clone(),
+    };
+    if buf.undo_stack.len() >= 50 {
+        buf.undo_stack.remove(0);
+    }
     buf.undo_stack.push(entry);
 
     // Compute a minimal edit using backend calculate_edit for consistency
@@ -281,11 +521,16 @@ pub async fn apply_full_update(path: String, new_content: String) -> Result<Stri
         // Apply single-span replacement based on calculated byte range
         let s = edit.start_byte.min(buf.content.len());
         let e = edit.old_end_byte.min(buf.content.len());
-        if s > e { return Err("calculated start greater than end".to_string()); }
+        if s > e {
+            return Err("calculated start greater than end".to_string());
+        }
         // UTF-8 boundary check
         if !is_boundary(&buf.content, s) || !is_boundary(&buf.content, e) {
-            return Err("calculated start/end are not at UTF-8 character boundaries".to_string()); }
-        let mut updated = String::with_capacity(buf.content.len() - (e - s) + (edit.new_end_byte - edit.start_byte));
+            return Err("calculated start/end are not at UTF-8 character boundaries".to_string());
+        }
+        let mut updated = String::with_capacity(
+            buf.content.len() - (e - s) + (edit.new_end_byte - edit.start_byte),
+        );
         updated.push_str(&buf.content[..s]);
         updated.push_str(&new_content[edit.start_byte..edit.new_end_byte]);
         updated.push_str(&buf.content[e..]);
@@ -314,18 +559,24 @@ pub async fn list_files(dir_path: String) -> Result<Vec<FileEntry>, String> {
         let path = entry.path();
         if let Some(path_str) = path.to_str() {
             let is_dir = path.is_dir();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string();
-            entries.push(FileEntry { path: path_str.to_string(), name, is_dir });
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Unknown")
+                .to_string();
+            entries.push(FileEntry {
+                path: path_str.to_string(),
+                name,
+                is_dir,
+            });
         }
     }
 
     // Sort entries: directories first, then files; alphabetical by name (case-insensitive)
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     Ok(entries)
@@ -333,9 +584,16 @@ pub async fn list_files(dir_path: String) -> Result<Vec<FileEntry>, String> {
 
 #[tauri::command]
 pub async fn get_system_info() -> Result<SystemInfo, String> {
-    let user = env::var("USER").or_else(|_| env::var("USERNAME")).unwrap_or_else(|_| "user".to_string());
-    let host = hostname::get().map_err(|e| format!("Failed to get hostname: {}", e))?.to_string_lossy().into_owned();
-    let home = env::var("HOME").or_else(|_| env::var("USERPROFILE")).unwrap_or_else(|_| "/".to_string());
+    let user = env::var("USER")
+        .or_else(|_| env::var("USERNAME"))
+        .unwrap_or_else(|_| "user".to_string());
+    let host = hostname::get()
+        .map_err(|e| format!("Failed to get hostname: {}", e))?
+        .to_string_lossy()
+        .into_owned();
+    let home = env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/".to_string());
     Ok(SystemInfo { user, host, home })
 }
 
@@ -347,7 +605,9 @@ pub async fn is_directory(path: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn get_line_count(path: String) -> Result<usize, String> {
-    let mut map = EDITOR_BUFFERS.lock().map_err(|_| "lock poisoned".to_string())?;
+    let mut map = EDITOR_BUFFERS
+        .lock()
+        .map_err(|_| "lock poisoned".to_string())?;
     let content = if let Some(buf) = map.get(&path) {
         buf.content.clone()
     } else {
@@ -365,7 +625,9 @@ pub async fn get_line_count(path: String) -> Result<usize, String> {
 #[tauri::command]
 pub async fn change_directory(cwd: String, target: String) -> Result<String, String> {
     // Resolve new working directory on the backend for cross-platform correctness
-    let home = env::var("HOME").or_else(|_| env::var("USERPROFILE")).unwrap_or_else(|_| cwd.clone());
+    let home = env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .unwrap_or_else(|_| cwd.clone());
     let trimmed = target.trim().to_string();
 
     let new_path_buf = if trimmed.is_empty() || trimmed == "~" {
@@ -383,10 +645,16 @@ pub async fn change_directory(cwd: String, target: String) -> Result<String, Str
     };
 
     if !new_path_buf.exists() {
-        return Err(format!("No such directory: {}", new_path_buf.to_string_lossy()));
+        return Err(format!(
+            "No such directory: {}",
+            new_path_buf.to_string_lossy()
+        ));
     }
     if !new_path_buf.is_dir() {
-        return Err(format!("Not a directory: {}", new_path_buf.to_string_lossy()));
+        return Err(format!(
+            "Not a directory: {}",
+            new_path_buf.to_string_lossy()
+        ));
     }
 
     let canonical = new_path_buf.canonicalize().unwrap_or(new_path_buf);
@@ -395,7 +663,6 @@ pub async fn change_directory(cwd: String, target: String) -> Result<String, Str
         .map(|s| s.to_string())
         .ok_or_else(|| "Failed to convert path to string".to_string())
 }
-
 
 #[tauri::command]
 pub fn execute_command(command: String, cwd: String) -> Result<String, String> {
@@ -415,21 +682,35 @@ fn resolve_unix_shell(shell_opt: Option<String>) -> (String, Vec<String>) {
 
     let (shell_path, args_prefix) = match choice.as_str() {
         "zsh" => {
-            let p = if which_exists("/bin/zsh") { "/bin/zsh" } else { "zsh" };
+            let p = if which_exists("/bin/zsh") {
+                "/bin/zsh"
+            } else {
+                "zsh"
+            };
             (p.to_string(), vec!["-c".to_string()])
         }
         "bash" => {
-            let p = if which_exists("/bin/bash") { "/bin/bash" } else { "bash" };
+            let p = if which_exists("/bin/bash") {
+                "/bin/bash"
+            } else {
+                "bash"
+            };
             (p.to_string(), vec!["-c".to_string()])
         }
         "sh" => {
-            let p = if which_exists("/bin/sh") { "/bin/sh" } else { "sh" };
+            let p = if which_exists("/bin/sh") {
+                "/bin/sh"
+            } else {
+                "sh"
+            };
             (p.to_string(), vec!["-c".to_string()])
         }
         _ => {
             // system default
             let env_shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-            let p = if which_exists(&env_shell) { env_shell } else if which_exists("/bin/zsh") {
+            let p = if which_exists(&env_shell) {
+                env_shell
+            } else if which_exists("/bin/zsh") {
                 "/bin/zsh".to_string()
             } else if which_exists("/bin/bash") {
                 "/bin/bash".to_string()
@@ -450,14 +731,29 @@ fn resolve_windows_shell(shell_opt: Option<String>) -> (String, Vec<String>) {
         .to_lowercase();
 
     match choice.as_str() {
-        "powershell" => ("powershell".to_string(), vec!["-NoLogo".to_string(), "-NoProfile".to_string(), "-Command".to_string()]),
+        "powershell" => (
+            "powershell".to_string(),
+            vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+            ],
+        ),
         "cmd" => ("cmd".to_string(), vec!["/C".to_string()]),
         _ => {
             // system default
-            let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\system32\cmd.exe".to_string());
+            let comspec = std::env::var("COMSPEC")
+                .unwrap_or_else(|_| r"C:\Windows\system32\cmd.exe".to_string());
             // If COMSPEC ends with powershell.exe (unlikely), use powershell semantics
             if comspec.to_lowercase().contains("powershell.exe") {
-                (comspec, vec!["-NoLogo".to_string(), "-NoProfile".to_string(), "-Command".to_string()])
+                (
+                    comspec,
+                    vec![
+                        "-NoLogo".to_string(),
+                        "-NoProfile".to_string(),
+                        "-Command".to_string(),
+                    ],
+                )
             } else {
                 (comspec, vec!["/C".to_string()])
             }
@@ -466,7 +762,11 @@ fn resolve_windows_shell(shell_opt: Option<String>) -> (String, Vec<String>) {
 }
 
 #[tauri::command]
-pub fn execute_command_with_shell(command: String, cwd: String, shell: Option<String>) -> Result<String, String> {
+pub fn execute_command_with_shell(
+    command: String,
+    cwd: String,
+    shell: Option<String>,
+) -> Result<String, String> {
     let path = Path::new(&cwd);
     if !path.exists() || !path.is_dir() {
         return Err(format!("Invalid working directory: {}", cwd));
@@ -489,10 +789,235 @@ pub fn execute_command_with_shell(command: String, cwd: String, shell: Option<St
     let mut stdout = String::from_utf8(output.stdout).unwrap_or_default();
     let mut stderr = String::from_utf8(output.stderr).unwrap_or_default();
 
-    if !stdout.ends_with('\n') && !stdout.is_empty() { stdout.push('\n'); }
-    if !stderr.ends_with('\n') && !stderr.is_empty() { stderr.push('\n'); }
+    if !stdout.ends_with('\n') && !stdout.is_empty() {
+        stdout.push('\n');
+    }
+    if !stderr.ends_with('\n') && !stderr.is_empty() {
+        stderr.push('\n');
+    }
 
     Ok(format!("{}{}", stdout, stderr))
+}
+
+#[tauri::command]
+pub fn start_process(
+    app: AppHandle,
+    command: String,
+    cwd: String,
+    shell: Option<String>
+) -> Result<(), String> {
+
+    let path = Path::new(&cwd);
+    if !path.exists() || !path.is_dir() {
+        return Err(format!("Invalid working directory: {}", cwd));
+    }
+
+    // Resolve shell (you already have these functions)
+    #[cfg(target_family = "unix")]
+    let (prog, mut args) = resolve_unix_shell(shell);
+
+    #[cfg(target_os = "windows")]
+    let (prog, mut args) = resolve_windows_shell(shell);
+
+    args.push(command.clone());
+
+    // ---------- SPAWN PROCESS ----------
+    #[cfg(target_family = "unix")]
+    let mut child = {
+        let mut cmd = Command::new(&prog);
+        cmd.current_dir(&cwd)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .before_exec(|| {
+                unsafe {
+                    libc::setsid(); // Create new process group
+                }
+                Ok(())
+            });
+
+        cmd.spawn()
+            .map_err(|e| format!("Failed to start process: {}", e))?
+    };
+
+    let proc_id = child.id().clone().to_string();
+    println!("Started process {} ({})", proc_id, command.clone());
+    {
+        // Record PID separately to avoid locking Child during kill
+        let mut preg = PROC_PIDS.lock().unwrap();
+        preg.insert(proc_id.clone(), child.id() as i32);
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut child = Command::new(&prog)
+        .current_dir(&cwd)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start process: {}", e))?;
+
+    let stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+
+    let child_arc = Arc::new(Mutex::new(child));
+
+    {
+        let mut reg = PROC_CHILDREN.lock().unwrap();
+        reg.insert(proc_id.clone(), child_arc.clone());
+    }
+
+    {
+        let mut reg = PROC_STDIN.lock().unwrap();
+        reg.insert(proc_id.clone(), stdin);
+    }
+
+    // ---------- STREAM STDOUT ----------
+    let app_stdout = app.clone();
+    let pid_stdout = proc_id.clone();
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            if let Ok(l) = line {
+                let _ = app_stdout.emit(
+                    "process-data",
+                    serde_json::json!({
+                        "id": pid_stdout,
+                        "stream": "stdout",
+                        "data": l + "\n",
+                    }),
+                );
+            }
+        }
+    });
+
+    // ---------- STREAM STDERR ----------
+    let app_stderr = app.clone();
+    let pid_stderr = proc_id.clone();
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(l) = line {
+                let _ = app_stderr.emit(
+                    "process-data",
+                    serde_json::json!({
+                        "id": pid_stderr,
+                        "stream": "stderr",
+                        "data": l + "\n",
+                    }),
+                );
+            }
+        }
+    });
+
+    // ---------- WAIT THREAD ----------
+    let app_exit = app.clone();
+    let pid_exit = proc_id.clone();
+    let child_arc_exit = child_arc.clone();
+
+    thread::spawn(move || {
+        let exit_status = {
+            let mut ch = child_arc_exit.lock().unwrap();
+            ch.wait()
+        };
+
+        {
+            let mut reg = PROC_CHILDREN.lock().unwrap();
+            reg.remove(&pid_exit);
+        }
+
+        {
+            let mut sreg = PROC_STDIN.lock().unwrap();
+            sreg.remove(&pid_exit);
+        }
+
+        {
+            let mut preg = PROC_PIDS.lock().unwrap();
+            preg.remove(&pid_exit);
+        }
+
+        let code = match exit_status {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(_) => -1,
+        };
+
+        println!("Process {} exited with {}", pid_exit, code);
+
+        let _ = app_exit.emit(
+            "process-exit",
+            serde_json::json!({
+                "id": pid_exit,
+                "code": code,
+            }),
+        );
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn write_to_process(proc_id: String, data: String) -> Result<(), String> {
+    let mut sreg = PROC_STDIN.lock().unwrap();
+    if let Some(stdin) = sreg.get_mut(&proc_id) {
+        stdin.write_all(data.as_bytes())
+            .map_err(|e| format!("Failed to write: {}", e))?;
+        stdin.flush().ok();
+        return Ok(());
+    }
+    Err("Process not found".into())
+}
+
+#[tauri::command]
+pub fn kill_process(proc_id: String) -> Result<(), String> {
+    println!("Killing process {}", proc_id);
+    println!("Kill requested for '{}'", proc_id);
+
+    // Close stdin to help some programs terminate on their own
+    {
+        let mut sreg = PROC_STDIN.lock().unwrap();
+        sreg.remove(&proc_id);
+    }
+
+    // Read PID without locking the Child (avoid deadlock with wait thread)
+    let pid_opt: Option<i32> = {
+        let preg = PROC_PIDS.lock().unwrap();
+        preg.get(&proc_id).cloned()
+    }.or_else(|| proc_id.parse::<i32>().ok());
+
+    println!("Resolved PID: {:?}", pid_opt);
+
+    if let Some(pid) = pid_opt {
+        thread::spawn(move || {
+            #[cfg(target_family = "unix")]
+            {
+                use std::time::Duration;
+                println!("Sending SIGTERM to PGID {}", pid);
+                unsafe {
+                    // Negative PID targets the process group created via setsid()
+                    let _ = libc::kill(-pid, libc::SIGTERM);
+                }
+                // Give a brief grace period, then force kill
+                std::thread::sleep(Duration::from_millis(400));
+                println!("Sending SIGKILL to PGID {}", pid);
+                unsafe {
+                    let _ = libc::kill(-pid, libc::SIGKILL);
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"]).spawn();
+            }
+        });
+    } else {
+        println!("No PID found for {} — cannot kill", proc_id);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -516,7 +1041,6 @@ pub fn get_default_shell() -> Result<String, String> {
     }
 }
 
-
 #[derive(Serialize)]
 pub struct KeyEventResult {
     pub content: String,
@@ -526,14 +1050,24 @@ pub struct KeyEventResult {
 
 fn detect_language_from_filename(path: &str) -> &'static str {
     let p = path.to_lowercase();
-    if p.ends_with(".rs") { "rust" }
-    else if p.ends_with(".py") { "python" }
-    else if p.ends_with(".c") || p.ends_with(".h") { "c" }
-    else if p.ends_with(".java") { "java" }
-    else if p.ends_with(".cs") { "c_sharp" }
-    else if p.ends_with(".sql") { "sequel" }
-    else if p.ends_with(".ts") || p.ends_with(".tsx") || p.ends_with(".js") || p.ends_with(".jsx") { "typescript" }
-    else { "typescript" }
+    if p.ends_with(".rs") {
+        "rust"
+    } else if p.ends_with(".py") {
+        "python"
+    } else if p.ends_with(".c") || p.ends_with(".h") {
+        "c"
+    } else if p.ends_with(".java") {
+        "java"
+    } else if p.ends_with(".cs") {
+        "c_sharp"
+    } else if p.ends_with(".sql") {
+        "sequel"
+    } else if p.ends_with(".ts") || p.ends_with(".tsx") || p.ends_with(".js") || p.ends_with(".jsx")
+    {
+        "typescript"
+    } else {
+        "typescript"
+    }
 }
 
 fn line_comment_for_language(lang: &str) -> &'static str {
@@ -550,9 +1084,13 @@ fn clamp_index(s: &str, idx: usize) -> usize {
 
 fn line_start_at(s: &str, mut idx: usize) -> usize {
     let bytes = s.as_bytes();
-    if idx > bytes.len() { idx = bytes.len(); }
+    if idx > bytes.len() {
+        idx = bytes.len();
+    }
     while idx > 0 {
-        if bytes[idx - 1] == b'\n' { break; }
+        if bytes[idx - 1] == b'\n' {
+            break;
+        }
         idx -= 1;
     }
     idx
@@ -560,9 +1098,13 @@ fn line_start_at(s: &str, mut idx: usize) -> usize {
 
 fn line_end_at(s: &str, mut idx: usize) -> usize {
     let bytes = s.as_bytes();
-    if idx > bytes.len() { idx = bytes.len(); }
+    if idx > bytes.len() {
+        idx = bytes.len();
+    }
     while idx < bytes.len() {
-        if bytes[idx] == b'\n' { break; }
+        if bytes[idx] == b'\n' {
+            break;
+        }
         idx += 1;
     }
     idx
@@ -574,7 +1116,9 @@ fn prev_non_ws_char_before(s: &str, idx: usize) -> Option<char> {
         let ch = s[..i].chars().rev().next()?; // expensive but fine for small spans
         let ch_len = ch.len_utf8();
         i -= ch_len;
-        if ch.is_ascii() { return Some(ch); }
+        if ch.is_ascii() {
+            return Some(ch);
+        }
     }
     None
 }
@@ -585,18 +1129,31 @@ fn whitespace_prefix_at(s: &str, line_start: usize) -> String {
     let bytes = s.as_bytes();
     while i < s.len() {
         let b = bytes[i];
-        if b == b' ' { out.push(' '); i += 1; }
-        else if b == b'\t' { out.push('\t'); i += 1; }
-        else { break; }
+        if b == b' ' {
+            out.push(' ');
+            i += 1;
+        } else if b == b'\t' {
+            out.push('\t');
+            i += 1;
+        } else {
+            break;
+        }
     }
     out
 }
 
 fn apply_with_undo(path: &str, new_content: String) -> Result<String, String> {
     let mut map = EDITOR_BUFFERS.lock().unwrap();
-    let buf = map.entry(path.to_string()).or_insert(EditorBuffer { content: String::new(), undo_stack: Vec::new() });
-    let entry = EditEntry { prev_content: buf.content.clone() };
-    if buf.undo_stack.len() >= 50 { buf.undo_stack.remove(0); }
+    let buf = map.entry(path.to_string()).or_insert(EditorBuffer {
+        content: String::new(),
+        undo_stack: Vec::new(),
+    });
+    let entry = EditEntry {
+        prev_content: buf.content.clone(),
+    };
+    if buf.undo_stack.len() >= 50 {
+        buf.undo_stack.remove(0);
+    }
     buf.undo_stack.push(entry);
     buf.content = new_content;
     Ok(buf.content.clone())
@@ -615,13 +1172,18 @@ pub async fn process_key_event(
 ) -> Result<KeyEventResult, String> {
     // get current content
     let mut map = EDITOR_BUFFERS.lock().unwrap();
-    let buf = map.entry(path.clone()).or_insert(EditorBuffer { content: String::new(), undo_stack: Vec::new() });
+    let buf = map.entry(path.clone()).or_insert(EditorBuffer {
+        content: String::new(),
+        undo_stack: Vec::new(),
+    });
     let content = buf.content.clone();
     drop(map);
 
     let mut start = clamp_index(&content, selection_start);
     let mut end = clamp_index(&content, selection_end);
-    if start > end { std::mem::swap(&mut start, &mut end); }
+    if start > end {
+        std::mem::swap(&mut start, &mut end);
+    }
 
     let lang = detect_language_from_filename(&path);
     let indent_unit = "    ";
@@ -650,7 +1212,9 @@ pub async fn process_key_event(
                 added_lines += 1;
                 let next_nl = {
                     let mut j = i;
-                    while j < content.len() && content.as_bytes()[j] != b'\n' { j += 1; }
+                    while j < content.len() && content.as_bytes()[j] != b'\n' {
+                        j += 1;
+                    }
                     j
                 };
                 out.push_str(&content[i..next_nl]);
@@ -660,7 +1224,9 @@ pub async fn process_key_event(
                 } else {
                     i = next_nl;
                 }
-                if first_line { first_line = false; }
+                if first_line {
+                    first_line = false;
+                }
             }
             out.push_str(&content[le..]);
             new_content = out;
@@ -683,37 +1249,65 @@ pub async fn process_key_event(
             let mut removed = 0usize;
             while j < content.len() && removed < 4 {
                 let b = content.as_bytes()[j];
-                if b == b' ' { j += 1; removed += 1; }
-                else if b == b'\t' { j += 1; removed = 1; break; }
-                else { break; }
+                if b == b' ' {
+                    j += 1;
+                    removed += 1;
+                } else if b == b'\t' {
+                    j += 1;
+                    removed = 1;
+                    break;
+                } else {
+                    break;
+                }
             }
-            out.push_str(&content[j..{
-                let mut k = j;
-                while k < content.len() && content.as_bytes()[k] != b'\n' { k += 1; }
-                k
-            }]);
+            out.push_str(
+                &content[j..{
+                    let mut k = j;
+                    while k < content.len() && content.as_bytes()[k] != b'\n' {
+                        k += 1;
+                    }
+                    k
+                }],
+            );
             let line_end = {
                 let mut k = j;
-                while k < content.len() && content.as_bytes()[k] != b'\n' { k += 1; }
+                while k < content.len() && content.as_bytes()[k] != b'\n' {
+                    k += 1;
+                }
                 k
             };
             if line_end < content.len() && content.as_bytes()[line_end] == b'\n' {
                 // out.push('\n');
             }
-            if removed > 0 { changed_lines += 1; removed_sum += removed; }
-            i = if line_end < content.len() { line_end + 1 } else { line_end };
+            if removed > 0 {
+                changed_lines += 1;
+                removed_sum += removed;
+            }
+            i = if line_end < content.len() {
+                line_end + 1
+            } else {
+                line_end
+            };
         }
         out.push_str(&content[le..]);
         new_content = out;
         // Adjust selection: start moves back by removed on first line if caret after removal point
         let first_line_removed = {
             let mut r = 0usize;
-            let mut j = ls; let mut removed = 0usize;
+            let mut j = ls;
+            let mut removed = 0usize;
             while j < content.len() && removed < 4 {
                 let b = content.as_bytes()[j];
-                if b == b' ' { j += 1; removed += 1; }
-                else if b == b'\t' { j += 1; removed = 1; break; }
-                else { break; }
+                if b == b' ' {
+                    j += 1;
+                    removed += 1;
+                } else if b == b'\t' {
+                    j += 1;
+                    removed = 1;
+                    break;
+                } else {
+                    break;
+                }
             }
             r = removed;
             r
@@ -742,7 +1336,8 @@ pub async fn process_key_event(
                     true
                 } else {
                     // Insert pair and place caret between them
-                    new_content = format!("{}{}{}{}", &content[..start], open, close, &content[end..]);
+                    new_content =
+                        format!("{}{}{}{}", &content[..start], open, close, &content[end..]);
                     new_sel_start = start + open.len_utf8();
                     new_sel_end = new_sel_start;
                     true
@@ -756,7 +1351,14 @@ pub async fn process_key_event(
             }
         } else {
             // wrap selection with pair; keep selection inside the brackets
-            new_content = format!("{}{}{}{}{}", &content[..start], open, &content[start..end], close, &content[end..]);
+            new_content = format!(
+                "{}{}{}{}{}",
+                &content[..start],
+                open,
+                &content[start..end],
+                close,
+                &content[end..]
+            );
             new_sel_start = start + open.len_utf8();
             new_sel_end = end + open.len_utf8();
             true
@@ -767,12 +1369,18 @@ pub async fn process_key_event(
         let prefix = whitespace_prefix_at(&content, ls);
         let mut add_indent = false;
         if let Some(ch) = prev_non_ws_char_before(&content, start) {
-            if matches!(lang, "rust" | "typescript" | "c" | "java" | "c_sharp") && ch == '{' { add_indent = true; }
-            if lang == "python" && ch == ':' { add_indent = true; }
+            if matches!(lang, "rust" | "typescript" | "c" | "java" | "c_sharp") && ch == '{' {
+                add_indent = true;
+            }
+            if lang == "python" && ch == ':' {
+                add_indent = true;
+            }
         }
         let mut insert = String::from("\n");
         insert.push_str(&prefix);
-        if add_indent { insert.push_str(indent_unit); }
+        if add_indent {
+            insert.push_str(indent_unit);
+        }
         new_content = format!("{}{}{}", &content[..start], insert, &content[end..]);
         new_sel_start = start + insert.len();
         new_sel_end = new_sel_start;
@@ -789,7 +1397,9 @@ pub async fn process_key_event(
         while i < le {
             // skip leading whitespace
             let mut j = i;
-            while j < content.len() && (bytes[j] == b' ' || bytes[j] == b'\t') { j += 1; }
+            while j < content.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
             if content[j..].starts_with(token) {
                 // ok
             } else {
@@ -797,7 +1407,9 @@ pub async fn process_key_event(
                 break;
             }
             // move to next line
-            while j < content.len() && bytes[j] != b'\n' { j += 1; }
+            while j < content.len() && bytes[j] != b'\n' {
+                j += 1;
+            }
             i = if j < content.len() { j + 1 } else { j };
         }
         // Build output
@@ -808,40 +1420,60 @@ pub async fn process_key_event(
         while i < le {
             // find line leading whitespace
             let mut j = i;
-            while j < content.len() && (bytes[j] == b' ' || bytes[j] == b'\t') { j += 1; }
+            while j < content.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
             if all_commented {
                 // remove one token instance
                 if content[j..].starts_with(token) {
                     out.push_str(&content[i..j]);
-                    out.push_str(&content[(j + token.len())..{
-                        let mut k = j + token.len();
-                        while k < content.len() && bytes[k] != b'\n' { k += 1; }
-                        k
-                    }]);
+                    out.push_str(
+                        &content[(j + token.len())..{
+                            let mut k = j + token.len();
+                            while k < content.len() && bytes[k] != b'\n' {
+                                k += 1;
+                            }
+                            k
+                        }],
+                    );
                     delta -= token.len() as isize;
                 } else {
-                    out.push_str(&content[i..{
-                        let mut k = i;
-                        while k < content.len() && bytes[k] != b'\n' { k += 1; }
-                        k
-                    }]);
+                    out.push_str(
+                        &content[i..{
+                            let mut k = i;
+                            while k < content.len() && bytes[k] != b'\n' {
+                                k += 1;
+                            }
+                            k
+                        }],
+                    );
                 }
             } else {
                 // insert token after leading whitespace
                 out.push_str(&content[i..j]);
                 out.push_str(token);
-                out.push_str(&content[j..{
-                    let mut k = j;
-                    while k < content.len() && bytes[k] != b'\n' { k += 1; }
-                    k
-                }]);
+                out.push_str(
+                    &content[j..{
+                        let mut k = j;
+                        while k < content.len() && bytes[k] != b'\n' {
+                            k += 1;
+                        }
+                        k
+                    }],
+                );
                 delta += token.len() as isize;
             }
             // copy newline if present
             let mut line_end = j;
-            while line_end < content.len() && bytes[line_end] != b'\n' { line_end += 1; }
+            while line_end < content.len() && bytes[line_end] != b'\n' {
+                line_end += 1;
+            }
             // if line_end < content.len() && bytes[line_end] == b'\n' { out.push('\n'); }
-            i = if line_end < content.len() { line_end + 1 } else { line_end };
+            i = if line_end < content.len() {
+                line_end + 1
+            } else {
+                line_end
+            };
         }
         out.push_str(&content[le..]);
         new_content = out;
@@ -855,7 +1487,6 @@ pub async fn process_key_event(
         }
         true
     } else if key == "Backspace" {
-
         //TODO
         false
     } else {
@@ -864,9 +1495,17 @@ pub async fn process_key_event(
 
     if handled {
         let updated = apply_with_undo(&path, new_content)?;
-        Ok(KeyEventResult { content: updated, selection_start: new_sel_start, selection_end: new_sel_end })
+        Ok(KeyEventResult {
+            content: updated,
+            selection_start: new_sel_start,
+            selection_end: new_sel_end,
+        })
     } else {
         // return unchanged
-        Ok(KeyEventResult { content, selection_start: start, selection_end: end })
+        Ok(KeyEventResult {
+            content,
+            selection_start: start,
+            selection_end: end,
+        })
     }
 }
