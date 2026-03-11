@@ -237,6 +237,7 @@
     if (f.endsWith('.cs')) return 'c_sharp';
     if (f.endsWith('.sql')) return 'sequel';
     if (f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.js') || f.endsWith('.jsx')) return 'typescript';
+    if (f.endsWith('.json')) return 'json';
     return 'typescript';
   }
 

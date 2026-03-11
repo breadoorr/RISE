@@ -24,6 +24,7 @@ pub fn get_language_object(language: &str) -> Language {
         "java" => tree_sitter_java::LANGUAGE.into(),
         "c_sharp" => tree_sitter_c_sharp::LANGUAGE.into(),
         "sequel" => tree_sitter_sequel::LANGUAGE.into(),
+        "json" => tree_sitter_json::LANGUAGE.into(),
         _ => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
     }
 }
@@ -36,6 +37,7 @@ pub fn get_language_query(language: &str) -> &str {
         "java" => tree_sitter_java::HIGHLIGHTS_QUERY.into(),
         "c_sharp" => tree_sitter_c_sharp::NODE_TYPES.into(),
         "sequel" => tree_sitter_sequel::HIGHLIGHTS_QUERY.into(),
+        "json" => tree_sitter_json::HIGHLIGHTS_QUERY.into(),
         _ => tree_sitter_javascript::HIGHLIGHT_QUERY.into(),
     }
 }
@@ -137,13 +139,12 @@ pub fn find_matches<'a>(code: String, matches: &mut QueryMatches<&'a[u8], &'a[u8
     while let Some(mat) = matches.next() {
         for cap in mat.captures {
             let node = cap.node;
-            if node.child_count() == 0 {
-                let start = node.start_byte();
-                let end = node.end_byte();
-                if start < end && end <= code.len() && seen.insert((start, end)) {
-                    let scope = query.capture_names()[cap.index as usize].to_string();
-                    final_spans.push((start, end, scope));
-                }
+            // Include all captured nodes, not just leaves. JSON strings and keys are often non-leaf nodes.
+            let start = node.start_byte();
+            let end = node.end_byte();
+            if start < end && end <= code.len() && seen.insert((start, end)) {
+                let scope = query.capture_names()[cap.index as usize].to_string();
+                final_spans.push((start, end, scope));
             }
         }
     }
@@ -327,6 +328,7 @@ pub fn highlight_html(
                     if is_match {
                         // html.push_str(&format!("<span class=\"token find-match\" style=\"{}\">{}</span>", style, escaped));
                     } else {
+                        println!("{:?}", style.clone());
                         html.push_str(&format!("<span class=\"token\" style=\"{}\">{}</span>", style, escaped));
                         // html.push_str(&escaped);
                     }
