@@ -127,32 +127,67 @@ pub fn reload_theme() {
 
 // Public API: get the formatted style for a given kind/scope
 pub fn get_style_for_kind(kind: &str) -> Option<String> {
-    let kind_lc = kind.to_lowercase();
+    fn style_from_scope(scope: &str) -> Option<String> {
+        let scope_lc = scope.to_lowercase();
+        let mut best: Option<&TokenStyle> = None;
+        let mut best_score: usize = 0;
+        let theme = ACTIVE_THEME.read().expect("theme lock poisoned");
+        for ts in &theme.token_styles {
+            for sc in &ts.scope {
+                let s = sc.to_lowercase();
+                let mut score = 0;
+                if scope_lc == s { score = s.len(); }
+                else if scope_lc.ends_with(&s) { score = s.len(); }
+                else if s.ends_with(&scope_lc) { score = scope_lc.len(); }
+                else if scope_lc.contains(&s) { score = s.len() / 2; }
+                else if s.contains(&scope_lc) { score = scope_lc.len() / 2; }
 
-    // Choose the best matching token style
-    let mut best: Option<&TokenStyle> = None;
-    let mut best_score: usize = 0;
-
-    let theme = ACTIVE_THEME.read().expect("theme lock poisoned");
-    for ts in &theme.token_styles {
-        for scope in &ts.scope {
-            let s = scope.to_lowercase();
-            let mut score = 0;
-            if kind_lc == s { score = s.len(); } else if kind_lc.ends_with(&s) { score = s.len(); } else if s.ends_with(&kind_lc) { score = kind_lc.len(); } else if kind_lc.contains(&s) { score = s.len() / 2; } else if s.contains(&kind_lc) { score = kind_lc.len() / 2; }
-
-            if score > best_score {
-                best_score = score;
-                best = Some(ts);
+                if score > best_score {
+                    best_score = score;
+                    best = Some(ts);
+                }
             }
         }
-    }
-
-    if let Some(ts) = best {
-        if let Some(color) = &ts.style.color {
-            let font_style = if ts.style.italic { "italic" } else if ts.style.bold { "bold" } else { "none" };
-            return Some(format!("color: {};   font-style: {}", color, font_style));
+        if let Some(ts) = best {
+            if let Some(color) = &ts.style.color {
+                let font_style = if ts.style.italic { "italic" } else if ts.style.bold { "bold" } else { "none" };
+                return Some(format!("color: {};   font-style: {}", color, font_style));
+            }
         }
+        None
     }
 
-    None
+    // 1) Try direct match first
+    if let Some(s) = style_from_scope(kind) { return Some(s); }
+
+    // 2) Try well-known aliases (esp. for JSON/tree-sitter captures)
+    // Map tree-sitter capture kinds to common VSCode scopes
+    let kind_lc = kind.to_lowercase();
+    let aliases: &[&str] = match kind_lc.as_str() {
+        // generic programming
+        "string" => &["string", "meta.string"],
+        "number" | "numeric" => &["constant.numeric", "number"],
+        "boolean" | "true" | "false" => &["constant.language.boolean", "keyword.operator", "boolean"],
+        "null" => &["constant.language.null", "constant.language"],
+        "property" | "pair_key" | "object_key" => &["variable.other.property", "meta.object.property", "property"],
+        "escape" | "escape_sequence" => &["constant.character.escape", "string"],
+        "punctuation.bracket" | "bracket" => &["punctuation.bracket", "punctuation"],
+        "punctuation.delimiter" | "delimiter" | "separator" | ":" | "," => &["punctuation.separator", "punctuation"],
+        "operator" => &["keyword.operator"],
+        // Try some broader fallbacks
+        _ => &[],
+    };
+
+    for a in aliases { if let Some(s) = style_from_scope(a) { return Some(s); } }
+
+    // 3) Final fallback: minimal default colors for common kinds if theme had nothing
+    match kind_lc.as_str() {
+        "string" => Some("color: #a6e3a1;   font-style: none".into()),
+        "number" | "numeric" => Some("color: #fab387;   font-style: none".into()),
+        "boolean" | "true" | "false" => Some("color: #f9e2af;   font-style: none".into()),
+        "null" => Some("color: #f38ba8;   font-style: italic".into()),
+        "property" | "pair_key" | "object_key" => Some("color: #89b4fa;   font-style: none".into()),
+        "punctuation.bracket" | "punctuation.delimiter" | "delimiter" | "separator" => Some("color: #9399b2;   font-style: none".into()),
+        _ => None,
+    }
 }

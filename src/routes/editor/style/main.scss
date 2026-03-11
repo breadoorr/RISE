@@ -72,6 +72,7 @@ main {
   background-color: var(--secondary-200);
   border-top: solid 1px var(--secondary-100);
   user-select: none;
+  z-index: 2;
 }
 
 .cursor-info {
