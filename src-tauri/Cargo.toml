@@ -1,6 +1,6 @@
 [package]
 name = "rise"
-version = "0.0.5"
+version = "0.0.6"
 description = "RISE IDE build for success"
 authors = ["you"]
 edition = "2021"
@@ -30,9 +30,12 @@ tauri-build = { version = "2", features = [] }
  tree-sitter-c-sharp = "0.23.1"
  tree-sitter-sequel = "0.3.8"
  tree-sitter-javascript = "0.25.0"
+ tree-sitter-json = "0.24.7"
  streaming-iterator = "0.1"
  anyhow = "1.0.98"
  notify = "8.1.0"
+ libc = "0.2.177"
+nix = { version = "0.27", features = ["process", "signal"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
 cocoa = "0.26"

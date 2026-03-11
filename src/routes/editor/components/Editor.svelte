@@ -157,7 +157,7 @@
   onMount(() => {
     const handleKeyDown = async (event: KeyboardEvent) => {
       if (!selectedFile || !editorElement) return;
-      const actionable = ['Tab', 'Enter', '/', '(', '{', '['];
+      const actionable = ['Tab', 'Enter', '(', '{', '['];
       const isActionKey = actionable.includes(event.key) || (event.shiftKey && event.key === 'Tab');
       if (event.target === editorElement && isActionKey) {
         // Delegate to backend to handle editor input behavior
@@ -221,7 +221,7 @@
           if (editorElement) editorElement.value = result;
           await updateLineNumbers(result);
           scheduleHighlight();
-        } else if (event.key === '/') {
+        } else if (event.key === '/' && event.metaKey == true) {
           // Comment/uncomment shortcut handled by process_key_event above when focus on editorElement
           if (event.target === editorElement) {
             event.preventDefault();
@@ -355,6 +355,7 @@
     if (f.endsWith('.cs')) return 'c_sharp';
     if (f.endsWith('.sql')) return 'sequel';
     if (f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.js') || f.endsWith('.jsx')) return 'typescript';
+    if (f.endsWith('.json')) return 'json';
     return 'typescript';
   }
 
