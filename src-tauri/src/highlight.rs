@@ -325,10 +325,9 @@ pub fn highlight_html(
                 let style_opt = crate::theme::get_style_for_kind(&kind);
                 if let Some(style) = style_opt {
                     if is_match {
-                        // html.push_str(&format!("<span class=\"token find-match\" style=\"{}\">{}</span>", style, escaped));
+                        html.push_str(&format!("<span class=\"token find-match\" style=\"{}\">{}</span>", style, escaped));
                     } else {
                         html.push_str(&format!("<span class=\"token\" style=\"{}\">{}</span>", style, escaped));
-                        // html.push_str(&escaped);
                     }
                 } else {
                     if is_match {

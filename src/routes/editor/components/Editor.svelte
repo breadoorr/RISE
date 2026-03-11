@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import type { FileEntry } from "$lib/utils/types";
+  import FindBar from './FindBar.svelte';
 
   // Props from parent
   export let sidebarWidth: number = 300;
@@ -47,6 +48,111 @@
   let highlightTimeout: number | null = null;
   let unlistenTheme: (() => void) | null = null;
 
+  // Find/Replace state (in-file)
+  let showFind = false;
+  let findQuery = '';
+  let replaceText = '';
+  let findCaseSensitive = false;
+  let matchIndices: number[] = [];
+  let currentMatch = 0;
+  let findBarRef: any;
+
+  function recomputeMatches() {
+    matchIndices = [];
+    if (!findQuery || !editorContent) { return; }
+    const hay = findCaseSensitive ? editorContent : editorContent.toLowerCase();
+    const needle = findCaseSensitive ? findQuery : findQuery.toLowerCase();
+    if (!needle) return;
+    let idx = 0;
+    while (idx <= hay.length - needle.length) {
+      const pos = hay.indexOf(needle, idx);
+      if (pos === -1) break;
+      matchIndices.push(pos);
+      idx = pos + Math.max(1, needle.length);
+    }
+    if (currentMatch >= matchIndices.length) currentMatch = 0;
+  }
+
+  function jumpToMatch(i: number) {
+    if (!editorElement || matchIndices.length === 0) return;
+    const len = findQuery.length;
+    const pos = matchIndices[i];
+    editorElement.selectionStart = pos;
+    editorElement.selectionEnd = pos + len;
+    editorElement.focus();
+    // ensure caret info updates
+    currentMatch = i;
+    updateCurrentLine({ target: editorElement } as any as Event);
+    syncLineNumbersScroll();
+    scheduleHighlight();
+  }
+
+  function findNext() {
+    if (matchIndices.length === 0) return;
+    const next = (currentMatch + 1) % matchIndices.length;
+    jumpToMatch(next);
+  }
+  function findPrev() {
+    if (matchIndices.length === 0) return;
+    const prev = (currentMatch - 1 + matchIndices.length) % matchIndices.length;
+    jumpToMatch(prev);
+  }
+  async function replaceOne() {
+    if (!selectedFile || matchIndices.length === 0) return;
+    const start = matchIndices[currentMatch];
+    const end = start + findQuery.length;
+    const before = editorContent.slice(0, start);
+    const after = editorContent.slice(end);
+    const newVal = before + replaceText + after;
+    try {
+      const updated = await invoke('apply_full_update', { path: selectedFile, newContent: newVal }) as string;
+      editorContent = updated;
+      lastBufferContent = updated;
+      isEdited = updated !== fileContent;
+      if (editorElement) editorElement.value = updated;
+      await updateLineNumbers(updated);
+      recomputeMatches();
+      // after replace, place caret after replaced segment
+      const caret = start + replaceText.length;
+      if (editorElement) {
+        editorElement.selectionStart = caret;
+        editorElement.selectionEnd = caret;
+      }
+      scheduleHighlight();
+    } catch (e) { console.error('replace one failed', e); }
+  }
+  async function replaceAll() {
+    if (!selectedFile || !findQuery) return;
+    // fast path: JS replaceAll if case sensitive, otherwise manual
+    let newVal: string;
+    if (findCaseSensitive) {
+      // use split+join to avoid regex semantics
+      newVal = editorContent.split(findQuery).join(replaceText);
+    } else {
+      const hay = editorContent.toLowerCase();
+      const needle = findQuery.toLowerCase();
+      let i = 0; let out = '';
+      while (i < editorContent.length) {
+        if (i + needle.length <= editorContent.length && hay.slice(i, i+needle.length) === needle) {
+          out += replaceText; i += needle.length;
+        } else {
+          const ch = editorContent[i]; out += ch; i += 1;
+        }
+      }
+      newVal = out;
+    }
+    try {
+      const updated = await invoke('apply_full_update', { path: selectedFile, newContent: newVal }) as string;
+      editorContent = updated;
+      lastBufferContent = updated;
+      isEdited = updated !== fileContent;
+      if (editorElement) editorElement.value = updated;
+      await updateLineNumbers(updated);
+      recomputeMatches();
+      scheduleHighlight();
+    } catch (e) { console.error('replace all failed', e); }
+  }
+
   // Lifecycle: manage key/focus/click listeners related to editor behavior
   onMount(() => {
     const handleKeyDown = async (event: KeyboardEvent) => {
@@ -88,6 +194,18 @@
         return;
       }
       if (event.ctrlKey || event.metaKey) {
+        if (event.key === 'f') {
+          // Open in-file find
+          event.preventDefault();
+          showFind = true;
+          // allow DOM to render, then focus
+          setTimeout(() => {
+            try { if (findBarRef && typeof findBarRef.focusFind === 'function') findBarRef.focusFind(); } catch {}
+          }, 0);
+          recomputeMatches();
+          scheduleHighlight();
+          return;
+        }
         if (event.key === 's') {
           event.preventDefault();
           if (selectedFile && isEdited) {
@@ -249,12 +367,13 @@
       clearTimeout(highlightTimeout);
     }
     const lang = detectLanguageFromFilename(selectedFile);
-    const matches: number[] = [];
-    const queryLen = 0;
+    // Provide match indices for highlighting when find is active
+    const matches: number[] = showFind && findQuery ? [...matchIndices] : [];
+    const queryLen = showFind ? (findQuery?.length || 0) : 0;
     const path = selectedFile;
     highlightTimeout = setTimeout(async () => {
       try {
-        highlightHtml = await invoke('highlight_html', { language: lang, matches, queryLen, path }) as string;
+        highlightHtml = await invoke('highlight_html', { language: lang, matches, queryLen: queryLen, path }) as string;
         syncLineNumbersScroll();
       } catch (e) {
         console.error('highlight error', e);
@@ -295,6 +414,9 @@
   }
 
   // React: when selectedFile or content changes, ensure UI updates
+  // Reactive: update matches when query/content or options change
+  $: if (showFind) { void editorContent; void findQuery; void findCaseSensitive; recomputeMatches(); scheduleHighlight(); }
+
   $: if (selectedFile !== null) {
     // re-run highlight when switching files
     scheduleHighlight();
@@ -304,6 +426,7 @@
 
 <div class="editor-area" style="width: calc(100% - {sidebarWidth}px - 5px); height: {isTerminalOpen ? `calc(100% - ${terminalHeight}px - 25px)` : 'calc(100vh - 25px)'};">
   <div class="editor-header" class:editor-header--closed={openFiles.length === 0}>
+    <div class="editor-header--tabs">
     {#each openFiles as file, index}
       <div class="file-tab" class:active={index === activeFileIndex}>
         <button class="file-tab--name-button" on:click={() => onTabClick(index)}>
@@ -312,10 +435,29 @@
         <button class="file-tab-close" on:click={(e) => onTabClose(index, e)} title="Close file">×</button>
       </div>
     {/each}
+    </div>
+    {#if showFind}
+      <FindBar
+              bind:this={findBarRef}
+              visible={showFind}
+              bind:query={findQuery}
+              bind:replacement={replaceText}
+              bind:caseSensitive={findCaseSensitive}
+              count={matchIndices.length}
+              index={currentMatch}
+              on:updateQuery={() => { recomputeMatches(); scheduleHighlight(); }}
+              on:updateCase={() => { recomputeMatches(); scheduleHighlight(); }}
+              on:prev={findPrev}
+              on:next={findNext}
+              on:replaceOne={replaceOne}
+              on:replaceAll={replaceAll}
+              on:close={() => showFind = false}
+      />
+    {/if}
   </div>
 
   {#if selectedFile}
-    <div class="editor-wrapper" bind:this={editorWrapper} style="height: {isTerminalOpen ? `calc(100vh - ${terminalHeight}px - 70px)` : 'calc(100vh - 70px)'};">
+    <div class="editor-wrapper" bind:this={editorWrapper} style="height: {isTerminalOpen ? `calc(100vh - ${terminalHeight}px - 70px)` : showFind ? 'calc(100vh - 70px - 100px)' : 'calc(100vh - 70px)'};">
       <div class="line-numbers">
         <div class="line-numbers-content">
           {#each Array(lineCount) as _, i}
@@ -345,4 +487,5 @@
 </div>
 <style lang="scss">
     @use '../style/editor';
+    .code-editor--highlight .find-match { background: rgba(255, 196, 0, 0.35); outline: 1px solid rgba(255, 196, 0, 0.6); border-radius: 2px; }
 </style>
