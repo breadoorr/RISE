@@ -9,16 +9,13 @@
     import type { FileEntry } from '$lib/utils/types';
     import {fileStore, refreshPathInStore, setProjectInfo} from '$lib/stores/fileStore';
     import { selectFile as selectFileInStore } from '$lib/stores/fileStore';
-    import { loadFiles as loadFilesUtil, updateAllFiles as flattenFilesUtil } from '$lib/utils/fileLoader';
+    import { updateAllFiles as flattenFilesUtil } from '$lib/utils/fileLoader';
     import {
         BugIcon,
         ChevronDown,
         Hammer,
-        HammerIcon,
-        LucideHammer,
         Play,
-        PlayIcon,
-        PlaySquare,
+        Square,
         Settings
     } from "lucide-svelte";
     import { basename } from "@tauri-apps/api/path";
@@ -84,6 +81,10 @@
     let toggleTerminal: () => void;
     let toggleFileMenu: (event: Event, isContextMenu: boolean, isDir: boolean, path: string, currentPath: string | null) => void;
     let runInTerminalFn: ((command: string, cwd?: string, shellId?: string) => Promise<void>) | null = null;
+
+    // Terminal integration for header Run↔Stop toggle
+    let isCommandRunning: boolean = false;
+    let stopInTerminalFn: (() => Promise<void>) | null = null;
 
     function prepareRunActions() {
         try {
@@ -166,6 +167,16 @@
             await runInTerminalFn(cmdToRun, cwd);
         } catch (e) {
             console.error('Run failed', e);
+        }
+    }
+
+    async function handleStopClick() {
+        try {
+            if (stopInTerminalFn) {
+                await stopInTerminalFn();
+            }
+        } catch (e) {
+            console.error('Stop failed', e);
         }
     }
 
@@ -476,8 +487,12 @@
     <button class="window-title--button">
         <Hammer size={20} />
     </button>
-    <button class="window-title--button" on:click={handleRunClick}>
-        <Play size={20} />
+    <button class="window-title--button" on:click={isCommandRunning ? handleStopClick : handleRunClick}>
+        {#if isCommandRunning}
+            <Square size={20} />
+        {:else}
+            <Play size={20} />
+        {/if}
     </button>
     <button class="window-title--button" on:click={openRunMenu}>
         {currentRunConfigName || 'Select run config'}
@@ -550,7 +565,18 @@
         onTabClose={(index, event) => closeFile(index, event)}
     />
 
-    <Terminal bind:isTerminalOpen bind:terminalHeight {projectPath} {user} {host} {home} bind:toggleTerminal exposeRun={(fn) => { runInTerminalFn = fn; }} />
+    <Terminal
+        bind:isTerminalOpen
+        bind:terminalHeight
+        {projectPath}
+        {user}
+        {host}
+        {home}
+        bind:toggleTerminal
+        bind:isCommandRunning
+        exposeRun={(fn) => { runInTerminalFn = fn; }}
+        exposeStop={(fn) => { stopInTerminalFn = fn; }}
+    />
 
     <div class="editor-footer">
         <div class="cursor-info">

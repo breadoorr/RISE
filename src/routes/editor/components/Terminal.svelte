@@ -15,8 +15,12 @@
     export let host: string;
     export let home: string;
     export let toggleTerminal: () => void;
-        // Allow parent to receive a function to run commands in the active terminal
-        export let exposeRun: ((fn: (command: string, cwd?: string, shellId?: string) => Promise<void>) => void) | undefined;
+    // Allow parent to receive a function to run commands in the active terminal
+    export let exposeRun: ((fn: (command: string, cwd?: string, shellId?: string) => Promise<void>) => void) | undefined;
+    // Allow parent to receive a function to stop the active long-running command
+    export let exposeStop: ((fn: () => Promise<void>) => void) | undefined;
+    // Bindable flag so parent (header run button) knows if any terminal tab has a running process
+    export let isCommandRunning: boolean = false;
 
     type TerminalTab = {
         id: string;
@@ -95,6 +99,21 @@
         return terminalTabs.find(t => t.id === activeTerminalTabId) || null;
     }
 
+    // Aggregate running state for parent binding
+    $: isCommandRunning = terminalTabs.some(t => t.runningProcId);
+
+    async function stopActiveProcess() {
+        const tab = getActiveTab();
+        if (!tab) return;
+        const id = tab.runningProcId;
+        if (!id) return;
+        try {
+            await invoke('kill_process', { procId: id });
+        } catch (e) {
+            console.error('Failed to kill process', e);
+        }
+    }
+
     function isLongRunning(command: string): boolean {
         const c = command.trim();
         return (
@@ -135,27 +154,35 @@
         if (isLongRunning(toRun)) {
             console.log('Long-running command detected:', toRun);
             term.write(toRun + "\r\n");
+            // Immediately flip header to Stop; will reset on process-exit
+            isCommandRunning = true;
             // Attach listeners for this tab
             if (tab.unlistenData) { try { tab.unlistenData(); } catch {}
             tab.unlistenData = undefined; }
             if (tab.unlistenExit) { try { tab.unlistenExit(); } catch {}
             tab.unlistenExit = undefined; }
             tab.unlistenData = await listen("process-data", (e: any) => {
-                console.log('process-data', e);
                 const payload = e.payload as any;
-                if (procId == "") {
+                // Ignore events for other processes
+                if (procId !== "" && payload.id !== procId) return;
+                if (procId === "") {
                     procId = payload.id;
                     tab.runningProcId = procId;
+                    // ensure header updates even if array reference doesn't change
+                    isCommandRunning = true;
                 }
                 term.write(String(payload.data || ''));
                 term.scrollToBottom();
             });
             tab.unlistenExit = await listen("process-exit", (e: any) => {
-                console.log('process-exit', e);
                 const payload = e.payload as any;
+                // Only handle exit for this tab's started process
+                if (payload.id !== procId) return;
                 tab.runningProcId = null;
                 term.write(`\r\n[process exited with code ${payload.code}]\r\n` + getPromptFor(tab));
                 term.scrollToBottom();
+                // Recompute aggregated running state for header button
+                isCommandRunning = terminalTabs.some(t => t.runningProcId);
                 // auto-clean listeners
                 if (tab.unlistenData) { try { tab.unlistenData(); } catch {} tab.unlistenData = undefined; }
                 if (tab.unlistenExit) { try { tab.unlistenExit(); } catch {} tab.unlistenExit = undefined; }
@@ -234,7 +261,7 @@
                 // If a process is running, forward newline to it
                 if (tab.runningProcId) {
                     term.write('\r\n');
-                    await invoke('write_to_process', { proc_id: tab.runningProcId, data: '\n' }).catch(() => {});
+                    await invoke('write_to_process', { procId: tab.runningProcId, data: '\n' }).catch(() => {});
                     return;
                 }
                 term.write('\r\n');
@@ -291,7 +318,7 @@
             if (!data) return;
             // When a process is running, forward all input to it directly
             if (tab.runningProcId) {
-                invoke('write_to_process', { proc_id: tab.runningProcId, data }).catch(() => {});
+                invoke('write_to_process', { procId: tab.runningProcId, data }).catch(() => {});
                 // local echo to feel responsive
                 if (data !== '\x03') { // not Ctrl+C
                     term.write(data);
@@ -433,9 +460,11 @@
         // Cleanup any running process and listeners
         if (closing.unlistenData) { try { closing.unlistenData(); } catch {} }
         if (closing.unlistenExit) { try { closing.unlistenExit(); } catch {} }
-        if (closing.runningProcId) { let r = await invoke('kill_process', { proc_id: closing.runningProcId }).catch(() => {}); console.log(r)}
+        if (closing.runningProcId) { let r = await invoke('kill_process', { procId: closing.runningProcId }).catch(() => {}); console.log(r)}
         closing.terminal?.dispose();
         terminalTabs = terminalTabs.filter((t, i) => i !== idx);
+        // Recompute aggregated running state after removing a tab
+        isCommandRunning = terminalTabs.some(t => t.runningProcId);
         if (activeTerminalTabId === id) {
             if (terminalTabs.length > 0) {
                 const newIdx = Math.max(0, idx - 1);
@@ -500,9 +529,12 @@
             createTerminalTab(selectedShell || defaultShellId);
         }
 
-        // Expose runner to parent if requested
+        // Expose runner/stopper to parent if requested
         if (exposeRun) {
             try { exposeRun(runInTerminal); } catch {}
+        }
+        if (exposeStop) {
+            try { exposeStop(stopActiveProcess); } catch {}
         }
 
         return () => {

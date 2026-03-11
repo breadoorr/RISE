@@ -328,7 +328,6 @@ pub fn highlight_html(
                     if is_match {
                         // html.push_str(&format!("<span class=\"token find-match\" style=\"{}\">{}</span>", style, escaped));
                     } else {
-                        println!("{:?}", style.clone());
                         html.push_str(&format!("<span class=\"token\" style=\"{}\">{}</span>", style, escaped));
                         // html.push_str(&escaped);
                     }
