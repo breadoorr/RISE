@@ -6,6 +6,7 @@
     import Sidebar from "./components/Sidebar.svelte";
     import Editor from "./components/Editor.svelte";
     import Menu from "./components/Menu.svelte";
+    import ProjectSearchModal from "./components/ProjectSearchModal.svelte";
     import type { FileEntry } from '$lib/utils/types';
     import {fileStore, refreshPathInStore, setProjectInfo} from '$lib/stores/fileStore';
     import { selectFile as selectFileInStore } from '$lib/stores/fileStore';
@@ -451,7 +452,177 @@
         document.body.classList.replace(currentTheme + '-theme', newTheme + '-theme');
         currentTheme = newTheme;
     }
+  // Project-wide search modal state
+  let showProjectSearch = false;
+  let projQuery = '';
+  let projReplacement = '';
+  let projCaseSensitive = false;
+  let projRegex = false;
+  let projResults: { path: string; line: number; column: number; line_text: string }[] = [];
+  let projPathResults: { path: string; name: string; is_dir: boolean }[] = [];
+  let projBusy = false;
+  let lastShiftTime = 0;
+  let searchNames = false;
+  let includeFiles = true;
+  let includeDirs = true;
 
+  function handleGlobalKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Shift') {
+      const now = Date.now();
+      if (now - lastShiftTime < 350) {
+        // double Shift detected
+        e.preventDefault();
+        showProjectSearch = true;
+        setTimeout(() => {
+          const input = document.querySelector('.project-search-modal input.query') as HTMLInputElement | null;
+          if (input) { input.focus(); input.select(); }
+        }, 0);
+      }
+      lastShiftTime = now;
+    }
+    if (showProjectSearch && e.key === 'Escape') {
+      showProjectSearch = false;
+    }
+  }
+
+  async function runProjectSearch() {
+    if (!projectPath || !projQuery) { projResults = []; projPathResults = []; return; }
+    projBusy = true;
+    try {
+      const res = await invoke('search_in_project', { rootPath: projectPath, query: projQuery, caseSensitive: projCaseSensitive, regex: projRegex, maxResults: 5000 }) as any[];
+      // Map snake_case from Rust to camelCase fields used here
+      projResults = res.map((r: any) => ({ path: r.path, line: r.line, column: r.column, line_text: r.line_text }));
+
+      if (searchNames) {
+        try {
+          const pres = await invoke('search_paths_in_project', {
+            rootPath: projectPath,
+            query: projQuery,
+            caseSensitive: projCaseSensitive,
+            includeDirs,
+            includeFiles,
+            maxResults: 5000
+          }) as any[];
+          projPathResults = pres.map((p: any) => ({ path: p.path, name: p.name, is_dir: p.is_dir }));
+        } catch (e) {
+          console.error('search_paths_in_project failed', e);
+          projPathResults = [];
+        }
+      } else {
+        projPathResults = [];
+      }
+    } catch (e) {
+      console.error('search_in_project failed', e);
+      projResults = [];
+      projPathResults = [];
+    } finally {
+      projBusy = false;
+    }
+  }
+
+  async function runProjectReplace(dryRun = false) {
+    if (!projectPath || !projQuery) return;
+    const ok = confirm(dryRun ? 'Preview replacements?' : 'Replace across project?');
+    if (!ok) return;
+    projBusy = true;
+    try {
+      const changed = await invoke('replace_in_project', { rootPath: projectPath, query: projQuery, replacement: projReplacement, caseSensitive: projCaseSensitive, regex: projRegex, dryRun, maxFiles: 500 }) as number;
+      if (!dryRun) {
+        // refresh tree
+        try { await refreshPathInStore(projectPath); } catch {}
+        // rerun search to update preview
+        await runProjectSearch();
+      } else {
+        alert(`Would change ${changed} file(s).`);
+      }
+    } catch (e) {
+      console.error('replace_in_project failed', e);
+    } finally {
+      projBusy = false;
+    }
+  }
+
+  function projectModalKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Escape') { showProjectSearch = false; e.stopPropagation(); }
+  }
+  function projectQueryKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Enter') { runProjectSearch(); }
+    if (e.key === 'Escape') { showProjectSearch = false; e.stopPropagation(); }
+  }
+
+  async function openSearchResult(item: { path: string; line: number; column: number }) {
+    // open or focus file tab, then set caret to location
+    const entry: FileEntry = { path: item.path, name: await basename(item.path), is_dir: false, level: 0, parent_dir: '', children: undefined } as any;
+    openFileFromSidebar(entry);
+    // Wait a tick for buffer to load
+    setTimeout(() => {
+      if (!editorElement || editorContent.length === 0) return;
+      // compute index from line/column (1-based)
+      let idx = 0; let line = 1; let i = 0;
+      while (i < editorContent.length && line < item.line) {
+        const ch = editorContent[i++];
+        idx++;
+        if (ch === '\n') line++;
+      }
+      idx += Math.max(0, item.column - 1);
+      editorElement.selectionStart = idx;
+      editorElement.selectionEnd = idx;
+      editorElement.focus();
+    }, 50);
+  }
+
+  async function expandFolderInSidebar(folderPath: string) {
+    if (!projectPath) return;
+    // Normalize and break path into segments
+    const root = projectPath;
+    if (!folderPath.startsWith(root)) {
+      // fallback: just refresh store at folderPath
+      await refreshPathInStore(folderPath);
+      return;
+    }
+    const rel = folderPath.slice(root.length).replace(/^\/+/, '');
+    const parts = rel.length ? rel.split('/') : [];
+
+    // Iteratively expand down the tree and refresh
+    let current = root;
+    for (const part of parts) {
+      current = current.endsWith('/') ? current + part : current + '/' + part;
+      // Mark node expanded if it exists in current local tree
+      fileStore.update((state) => {
+        const mutate = (node: any): boolean => {
+          if (!node) return false;
+          if (node.path === current) {
+            if (node.is_dir) node.expanded = true;
+            return true;
+          }
+          if (node.children) {
+            for (const c of node.children) {
+              if (mutate(c)) return true;
+            }
+          }
+          return false;
+        };
+        const nextFiles = [...state.files];
+        if (nextFiles[0]) mutate(nextFiles[0]);
+        return { ...state, files: nextFiles } as any;
+      });
+      await refreshPathInStore(current);
+    }
+  }
+
+  async function openPathResult(item: { path: string; name: string; is_dir: boolean }) {
+    if (item.is_dir) {
+      await expandFolderInSidebar(item.path);
+    } else {
+      const entry: FileEntry = { path: item.path, name: await basename(item.path), is_dir: false, level: 0, parent_dir: '', children: undefined } as any;
+      openFileFromSidebar(entry);
+    }
+  }
+
+  onMount(() => {
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  });
 </script>
 
 <Menu Actions={actions} x={x} y={y} isMenuOpen={isSettingOpen} triggerAction={(action) => {
@@ -586,6 +757,40 @@
     </div>
 </main>
 
+<ProjectSearchModal
+  open={showProjectSearch}
+  bind:query={projQuery}
+  bind:replacement={projReplacement}
+  bind:caseSensitive={projCaseSensitive}
+  results={projResults}
+  busy={projBusy}
+  bind:searchNames
+  bind:includeDirs
+  bind:includeFiles
+  pathResults={projPathResults}
+  on:close={() => showProjectSearch = false}
+  on:search={runProjectSearch}
+  on:preview={() => runProjectReplace(true)}
+  on:replace={() => runProjectReplace(false)}
+  on:openResult={(e) => openSearchResult(e.detail)}
+  on:openPath={(e) => openPathResult(e.detail)}
+/>
+
 <style lang="scss">
   @use 'style/main';
+  .project-search-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: flex-start; justify-content: center; padding-top: 10vh; z-index: 50; }
+  .project-search-modal .modal-card { width: min(960px, 90vw); max-height: 80vh; background: #1e1e1e; color: #ddd; border: 1px solid #444; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); display: flex; flex-direction: column; }
+  .project-search-modal .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid #333; }
+  .project-search-modal .modal-header .close { background: transparent; border: none; color: #ddd; font-size: 20px; cursor: pointer; }
+  .project-search-modal .modal-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .project-search-modal .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .project-search-modal input { background: #222; color: #ddd; border: 1px solid #444; padding: 6px 8px; border-radius: 6px; }
+  .project-search-modal button { background: #333; color: #ddd; border: 1px solid #555; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+  .project-search-modal .results { overflow: auto; max-height: 60vh; border-top: 1px solid #333; }
+  .project-search-modal ul { list-style: none; margin: 0; padding: 0; }
+  .project-search-modal .result { padding: 8px 6px; border-bottom: 1px solid #2a2a2a; cursor: pointer; }
+  .project-search-modal .result:hover { background: #2a2a2a; }
+  .project-search-modal .result .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; opacity: 0.9; }
+  .project-search-modal .result .loc { font-size: 12px; opacity: 0.8; }
+  .project-search-modal .result .preview { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 </style>

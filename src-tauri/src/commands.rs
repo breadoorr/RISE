@@ -7,6 +7,16 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::{HashMap, HashSet};
+use std::io::{self, Read};
+use std::fs::File;
+use std::sync::Mutex;
+use streaming_iterator::StreamingIterator;
+use crate::highlight::{escape_html, calculate_edit, highlight_ast};
+use serde_json;
+use crate::theme::reload_theme;
+use tauri::State;
+use tauri::Emitter;
+use std::ffi::OsStr;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -797,6 +807,236 @@ pub fn execute_command_with_shell(
     }
 
     Ok(format!("{}{}", stdout, stderr))
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SearchResultItem {
+    pub path: String,
+    pub line: usize,
+    pub column: usize,
+    pub line_text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PathSearchItem {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+}
+
+fn should_ignore_path(p: &Path) -> bool {
+    if let Some(s) = p.to_str() {
+        let low = s.to_lowercase();
+        if low.contains("/node_modules/") || low.ends_with("/node_modules") { return true; }
+        if low.contains("/.git/") || low.ends_with("/.git") { return true; }
+        if low.contains("/target/") || low.ends_with("/target") { return true; }
+    }
+    false
+}
+
+fn is_probably_text(path: &Path) -> bool {
+    // simple heuristic: limit size and ensure no NUL bytes in first chunk
+    if let Ok(meta) = fs::metadata(path) {
+        if !meta.is_file() { return false; }
+        if meta.len() > 2 * 1024 * 1024 { // 2MB cap
+            return false;
+        }
+    } else { return false; }
+    if let Ok(mut f) = File::open(path) {
+        let mut buf = [0u8; 1024];
+        if let Ok(n) = f.read(&mut buf) {
+            if buf[..n].iter().any(|&b| b == 0) { return false; }
+        }
+        return true;
+    }
+    false
+}
+
+#[tauri::command]
+pub async fn search_paths_in_project(
+    root_path: String,
+    query: String,
+    case_sensitive: bool,
+    include_dirs: bool,
+    include_files: bool,
+    max_results: Option<usize>,
+) -> Result<Vec<PathSearchItem>, String> {
+    if query.is_empty() { return Ok(vec![]); }
+    let root = Path::new(&root_path);
+    if !root.exists() || !root.is_dir() { return Err("Invalid project root".to_string()); }
+    if !include_dirs && !include_files { return Ok(vec![]); }
+
+    let mut out: Vec<PathSearchItem> = Vec::new();
+    let limit = max_results.unwrap_or(5000);
+    let qcmp = if case_sensitive { query.clone() } else { query.to_lowercase() };
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if should_ignore_path(&dir) { continue; }
+        let rd = match fs::read_dir(&dir) { Ok(d) => d, Err(_) => continue };
+        for ent in rd {
+            if out.len() >= limit { break; }
+            if let Ok(e) = ent {
+                let p = e.path();
+                if should_ignore_path(&p) { continue; }
+                let is_dir = p.is_dir();
+                if is_dir { stack.push(p.clone()); }
+                let include = (is_dir && include_dirs) || (!is_dir && include_files);
+                if !include { continue; }
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                let ncmp = if case_sensitive { name.clone() } else { name.to_lowercase() };
+                if ncmp.contains(&qcmp) {
+                    out.push(PathSearchItem { path: p.to_string_lossy().into_owned(), name, is_dir });
+                }
+            }
+        }
+        if out.len() >= limit { break; }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn search_in_project(root_path: String, query: String, case_sensitive: bool, regex: bool, max_results: Option<usize>) -> Result<Vec<SearchResultItem>, String> {
+    if query.is_empty() { return Ok(vec![]); }
+    let root = Path::new(&root_path);
+    if !root.exists() || !root.is_dir() {
+        return Err("Invalid project root".to_string());
+    }
+    let mut out: Vec<SearchResultItem> = Vec::new();
+    let limit = max_results.unwrap_or(5000);
+
+    let query_cmp = if case_sensitive { query.clone() } else { query.to_lowercase() };
+
+    fn scan_file(path: &Path, query_cmp: &str, orig_query: &str, case_sensitive: bool, out: &mut Vec<SearchResultItem>, limit: usize) {
+        if out.len() >= limit { return; }
+        let content = match fs::read_to_string(path) { Ok(s) => s, Err(_) => return };
+        let haystack = if case_sensitive { content.as_str().to_string() } else { content.to_lowercase() };
+        let mut idx = 0usize;
+        while out.len() < limit {
+            if let Some(pos) = haystack[idx..].find(query_cmp) {
+                let abs = idx + pos;
+                // compute line and col
+                let prefix = &content[..abs.min(content.len())];
+                let line = prefix.as_bytes().iter().filter(|&&b| b == b'\n').count() + 1;
+                let line_start = {
+                    let mut i = abs.min(content.len());
+                    while i > 0 && content.as_bytes()[i-1] != b'\n' { i -= 1; }
+                    i
+                };
+                let column = abs - line_start + 1;
+                let line_end = {
+                    let mut i = abs.min(content.len());
+                    while i < content.len() && content.as_bytes()[i] != b'\n' { i += 1; }
+                    i
+                };
+                let mut line_text = content[line_start..line_end].to_string();
+                if line_text.len() > 400 { line_text.truncate(400); }
+                out.push(SearchResultItem { path: path.to_string_lossy().into_owned(), line, column, line_text });
+                idx = abs + orig_query.len();
+                if idx >= haystack.len() { break; }
+            } else { break; }
+        }
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if should_ignore_path(&dir) { continue; }
+        let rd = match fs::read_dir(&dir) { Ok(d) => d, Err(_) => continue };
+        for ent in rd {
+            if out.len() >= limit { break; }
+            if let Ok(e) = ent {
+                let p = e.path();
+                if should_ignore_path(&p) { continue; }
+                if p.is_dir() {
+                    stack.push(p);
+                } else if is_probably_text(&p) {
+                    scan_file(&p, &query_cmp, &query, case_sensitive, &mut out, limit);
+                }
+            }
+        }
+        if out.len() >= limit { break; }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn replace_in_project(root_path: String, query: String, replacement: String, case_sensitive: bool, regex: bool, dry_run: bool, max_files: Option<usize>) -> Result<usize, String> {
+    if query.is_empty() { return Ok(0); }
+    let root = Path::new(&root_path);
+    if !root.exists() || !root.is_dir() {
+        return Err("Invalid project root".to_string());
+    }
+    let mut changed_files = 0usize;
+    let mut processed = 0usize;
+    let limit_files = max_files.unwrap_or(500);
+
+    let cmp_query = if case_sensitive { query.clone() } else { query.to_lowercase() };
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if should_ignore_path(&dir) { continue; }
+        let rd = match fs::read_dir(&dir) { Ok(d) => d, Err(_) => continue };
+        for ent in rd {
+            if processed >= limit_files { break; }
+            if let Ok(e) = ent {
+                let p = e.path();
+                if should_ignore_path(&p) { continue; }
+                if p.is_dir() {
+                    stack.push(p);
+                } else if is_probably_text(&p) {
+                    processed += 1;
+                    let content = match fs::read_to_string(&p) { Ok(s) => s, Err(_) => continue };
+                    let hay = if case_sensitive { content.clone() } else { content.to_lowercase() };
+                    if !hay.contains(&cmp_query) { continue; }
+                    let new_content = if case_sensitive { content.replace(&query, &replacement) } else {
+                        // naive case-insensitive replace: iterate manually
+                        let mut out = String::with_capacity(content.len());
+                        let mut i = 0usize;
+                        let lower = hay.as_str();
+                        let ql = cmp_query.len();
+                        while i < content.len() {
+                            if i + ql <= content.len() && &lower[i..i+ql] == cmp_query {
+                                out.push_str(&replacement);
+                                i += ql;
+                            } else {
+                                // push next char from original to keep casing intact
+                                let ch = content[i..].chars().next().unwrap();
+                                out.push(ch);
+                                i += ch.len_utf8();
+                            }
+                        }
+                        out
+                    };
+                    if new_content != content {
+                        if !dry_run {
+                            // Update open buffer if present, else write to disk
+                            let path_str = p.to_string_lossy().into_owned();
+                            {
+                                let mut map = EDITOR_BUFFERS.lock().unwrap();
+                                if let Some(buf) = map.get_mut(&path_str) {
+                                    // push undo snapshot
+                                    let entry = EditEntry { prev_content: buf.content.clone() };
+                                    if buf.undo_stack.len() >= 50 { buf.undo_stack.remove(0); }
+                                    buf.undo_stack.push(entry);
+                                    buf.content = new_content.clone();
+                                }
+                            }
+                            if let Err(e) = fs::write(&p, &new_content) {
+                                eprintln!("Failed to write {}: {}", p.to_string_lossy(), e);
+                            } else {
+                                crate::file_watcher::mark_self_write(&p);
+                                changed_files += 1;
+                            }
+                        } else {
+                            changed_files += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if processed >= limit_files { break; }
+    }
+    Ok(changed_files)
 }
 
 #[tauri::command]

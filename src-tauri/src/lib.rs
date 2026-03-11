@@ -38,6 +38,9 @@ pub use commands::{
     process_key_event,
     get_app_theme,
     update_app_theme,
+    search_in_project,
+    search_paths_in_project,
+    replace_in_project,
     flush_app_config,
 };
 
@@ -82,6 +85,9 @@ pub fn run() {
             perform_action,
             get_app_theme,
             update_app_theme,
+            search_in_project,
+            search_paths_in_project,
+            replace_in_project,
         ])
         .setup(|app| {
             let win_builder =
