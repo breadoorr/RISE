@@ -8,6 +8,12 @@
     export let caseSensitive: boolean = false;
     export let results: { path: string; line: number; column: number; line_text: string }[] = [];
 
+    // New: path/file/folder search controls and results
+    export let searchNames: boolean = true;
+    export let includeDirs: boolean = true;
+    export let includeFiles: boolean = true;
+    export let pathResults: { path: string; name: string; is_dir: boolean }[] = [];
+
     const dispatch = createEventDispatcher();
 
     function onKeyDown(e: KeyboardEvent) {
@@ -37,7 +43,7 @@
             </div>
             <div class="modal-body">
                 <div class="controls">
-                    <input class="query" type="text" placeholder="Find text" bind:value={query}
+                    <input class="query" type="text" placeholder="Find text or name" bind:value={query}
                            on:keydown={onQueryKeyDown} on:input={() => dispatch('updateQuery', { value: query })}/>
                     <input class="replacement" type="text" placeholder="Replace with (optional)"
                            bind:value={replacement}
@@ -52,18 +58,42 @@
                 <div class="results">
                     {#if busy}
                         <div class="loading">Searching…</div>
-                    {:else if results.length === 0}
-                        <div class="empty">No results</div>
                     {:else}
-                        <ul>
-                            {#each results as r}
-                                <li class="result" on:click={() => dispatch('openResult', r)}>
-                                    <div class="path">{r.path}</div>
-                                    <div class="loc">{r.line}:{r.column}</div>
-                                    <div class="preview">{r.line_text}</div>
-                                </li>
-                            {/each}
-                        </ul>
+                        {#if searchNames}
+                          <div class="section">
+                            <div class="section-title">Name matches ({pathResults.length})</div>
+                            {#if pathResults.length === 0}
+                              <div class="empty small">No file/folder matches</div>
+                            {:else}
+                              <ul>
+                                {#each pathResults as p}
+                                  <li class="result path-result" on:click={() => dispatch('openPath', p)}>
+                                    <div class="path">{p.path}</div>
+                                    <div class="loc">{p.is_dir ? 'folder' : 'file'}</div>
+                                    <div class="preview">{p.name}</div>
+                                  </li>
+                                {/each}
+                              </ul>
+                            {/if}
+                          </div>
+                        {/if}
+
+                        <div class="section">
+                          <div class="section-title">Content matches ({results.length})</div>
+                          {#if results.length === 0}
+                            <div class="empty small">No content results</div>
+                          {:else}
+                            <ul>
+                                {#each results as r}
+                                    <li class="result" on:click={() => dispatch('openResult', r)}>
+                                        <div class="path">{r.path}</div>
+                                        <div class="loc">{r.line}:{r.column}</div>
+                                        <div class="preview">{r.line_text}</div>
+                                    </li>
+                                {/each}
+                            </ul>
+                          {/if}
+                        </div>
                     {/if}
                 </div>
             </div>
@@ -210,4 +240,14 @@
     text-overflow: ellipsis;
     opacity: 0.95;
   }
+
+  /* New sections for name vs content results */
+  .section { margin-top: 8px; }
+  .section-title {
+    font-size: 12px; font-weight: 600; opacity: 0.8; margin: 6px 2px; text-transform: uppercase; letter-spacing: 0.02em;
+  }
+  .inline { display: inline-flex; align-items: center; gap: 6px; }
+  .name-filters { display: inline-flex; align-items: center; gap: 10px; margin-left: 8px; }
+  .empty.small { opacity: 0.7; font-size: 12px; padding: 4px 2px; }
+  .path-result .preview { opacity: 0.8; }
 </style>

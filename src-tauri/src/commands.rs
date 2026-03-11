@@ -507,6 +507,13 @@ pub struct SearchResultItem {
     pub line_text: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PathSearchItem {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+}
+
 fn should_ignore_path(p: &Path) -> bool {
     if let Some(s) = p.to_str() {
         let low = s.to_lowercase();
@@ -533,6 +540,49 @@ fn is_probably_text(path: &Path) -> bool {
         return true;
     }
     false
+}
+
+#[tauri::command]
+pub async fn search_paths_in_project(
+    root_path: String,
+    query: String,
+    case_sensitive: bool,
+    include_dirs: bool,
+    include_files: bool,
+    max_results: Option<usize>,
+) -> Result<Vec<PathSearchItem>, String> {
+    if query.is_empty() { return Ok(vec![]); }
+    let root = Path::new(&root_path);
+    if !root.exists() || !root.is_dir() { return Err("Invalid project root".to_string()); }
+    if !include_dirs && !include_files { return Ok(vec![]); }
+
+    let mut out: Vec<PathSearchItem> = Vec::new();
+    let limit = max_results.unwrap_or(5000);
+    let qcmp = if case_sensitive { query.clone() } else { query.to_lowercase() };
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if should_ignore_path(&dir) { continue; }
+        let rd = match fs::read_dir(&dir) { Ok(d) => d, Err(_) => continue };
+        for ent in rd {
+            if out.len() >= limit { break; }
+            if let Ok(e) = ent {
+                let p = e.path();
+                if should_ignore_path(&p) { continue; }
+                let is_dir = p.is_dir();
+                if is_dir { stack.push(p.clone()); }
+                let include = (is_dir && include_dirs) || (!is_dir && include_files);
+                if !include { continue; }
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                let ncmp = if case_sensitive { name.clone() } else { name.to_lowercase() };
+                if ncmp.contains(&qcmp) {
+                    out.push(PathSearchItem { path: p.to_string_lossy().into_owned(), name, is_dir });
+                }
+            }
+        }
+        if out.len() >= limit { break; }
+    }
+    Ok(out)
 }
 
 #[tauri::command]

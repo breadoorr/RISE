@@ -33,6 +33,7 @@ pub use commands::{
     get_app_theme,
     update_app_theme,
     search_in_project,
+    search_paths_in_project,
     replace_in_project,
 };
 
@@ -72,6 +73,7 @@ pub fn run() {
             get_app_theme,
             update_app_theme,
             search_in_project,
+            search_paths_in_project,
             replace_in_project,
         ])
         .setup(|app| {

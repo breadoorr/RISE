@@ -299,8 +299,12 @@
   let projCaseSensitive = false;
   let projRegex = false;
   let projResults: { path: string; line: number; column: number; line_text: string }[] = [];
+  let projPathResults: { path: string; name: string; is_dir: boolean }[] = [];
   let projBusy = false;
   let lastShiftTime = 0;
+  let searchNames = false;
+  let includeFiles = true;
+  let includeDirs = true;
 
   function handleGlobalKeyDown(e: KeyboardEvent) {
     if (e.key === 'Shift') {
@@ -322,15 +326,35 @@
   }
 
   async function runProjectSearch() {
-    if (!projectPath || !projQuery) { projResults = []; return; }
+    if (!projectPath || !projQuery) { projResults = []; projPathResults = []; return; }
     projBusy = true;
     try {
       const res = await invoke('search_in_project', { rootPath: projectPath, query: projQuery, caseSensitive: projCaseSensitive, regex: projRegex, maxResults: 5000 }) as any[];
       // Map snake_case from Rust to camelCase fields used here
       projResults = res.map((r: any) => ({ path: r.path, line: r.line, column: r.column, line_text: r.line_text }));
+
+      if (searchNames) {
+        try {
+          const pres = await invoke('search_paths_in_project', {
+            rootPath: projectPath,
+            query: projQuery,
+            caseSensitive: projCaseSensitive,
+            includeDirs,
+            includeFiles,
+            maxResults: 5000
+          }) as any[];
+          projPathResults = pres.map((p: any) => ({ path: p.path, name: p.name, is_dir: p.is_dir }));
+        } catch (e) {
+          console.error('search_paths_in_project failed', e);
+          projPathResults = [];
+        }
+      } else {
+        projPathResults = [];
+      }
     } catch (e) {
       console.error('search_in_project failed', e);
       projResults = [];
+      projPathResults = [];
     } finally {
       projBusy = false;
     }
@@ -385,6 +409,54 @@
       editorElement.selectionEnd = idx;
       editorElement.focus();
     }, 50);
+  }
+
+  async function expandFolderInSidebar(folderPath: string) {
+    if (!projectPath) return;
+    // Normalize and break path into segments
+    const root = projectPath;
+    if (!folderPath.startsWith(root)) {
+      // fallback: just refresh store at folderPath
+      await refreshPathInStore(folderPath);
+      return;
+    }
+    const rel = folderPath.slice(root.length).replace(/^\/+/, '');
+    const parts = rel.length ? rel.split('/') : [];
+
+    // Iteratively expand down the tree and refresh
+    let current = root;
+    for (const part of parts) {
+      current = current.endsWith('/') ? current + part : current + '/' + part;
+      // Mark node expanded if it exists in current local tree
+      fileStore.update((state) => {
+        const mutate = (node: any): boolean => {
+          if (!node) return false;
+          if (node.path === current) {
+            if (node.is_dir) node.expanded = true;
+            return true;
+          }
+          if (node.children) {
+            for (const c of node.children) {
+              if (mutate(c)) return true;
+            }
+          }
+          return false;
+        };
+        const nextFiles = [...state.files];
+        if (nextFiles[0]) mutate(nextFiles[0]);
+        return { ...state, files: nextFiles } as any;
+      });
+      await refreshPathInStore(current);
+    }
+  }
+
+  async function openPathResult(item: { path: string; name: string; is_dir: boolean }) {
+    if (item.is_dir) {
+      await expandFolderInSidebar(item.path);
+    } else {
+      const entry: FileEntry = { path: item.path, name: await basename(item.path), is_dir: false, level: 0, parent_dir: '', children: undefined } as any;
+      openFileFromSidebar(entry);
+    }
   }
 
   onMount(() => {
@@ -505,11 +577,16 @@
   bind:caseSensitive={projCaseSensitive}
   results={projResults}
   busy={projBusy}
+  bind:searchNames
+  bind:includeDirs
+  bind:includeFiles
+  pathResults={projPathResults}
   on:close={() => showProjectSearch = false}
   on:search={runProjectSearch}
   on:preview={() => runProjectReplace(true)}
   on:replace={() => runProjectReplace(false)}
   on:openResult={(e) => openSearchResult(e.detail)}
+  on:openPath={(e) => openPathResult(e.detail)}
 />
 
 <style lang="scss">
