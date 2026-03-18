@@ -33,7 +33,7 @@
 </script>
 
 {#if visible}
-  <div class="find-bar" on:keydown={handleKeyDown}>
+  <div class="find-bar" role="toolbar" tabindex="0" aria-label="Find and replace" on:keydown={handleKeyDown}>
     <input class="find-input" bind:this={findInput} type="text" placeholder="Find" bind:value={query} on:input={() => dispatch('updateQuery', { value: query })} />
     <input class="replace-input" type="text" placeholder="Replace" bind:value={replacement} on:input={() => dispatch('updateReplacement', { value: replacement })} />
     <label class="case-toggle" title="Case sensitive">

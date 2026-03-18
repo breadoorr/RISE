@@ -31,6 +31,12 @@
     let draggedItem: FileEntry | null = null;
     let dropTargetPath: string | null = null;
 
+    // Action to focus an element on mount without using the autofocus attribute (avoids a11y warning)
+    function focusOnMount(node: HTMLElement) {
+        const t = setTimeout(() => node.focus(), 0);
+        return { destroy() { clearTimeout(t); } };
+    }
+
     // Regex for valid file/folder names: alphanumeric, spaces, hyphens, underscores, periods (for files)
     const validNameRegex = /^[a-zA-Z0-9 _-]([a-zA-Z0-9 _.-]*[a-zA-Z0-9 _-])?$/;
     const invalidChars = /[\/\\:*?"<>|]/;
@@ -343,7 +349,7 @@
                 class="file-list"
                 style="height: {isTerminalOpen ? `calc(100vh - ${terminalHeight+60}px)` : 'calc(100vh - 60px)'};"
         >
-            <FileMenu bind:toggleFileMenu bind:createNewItem bind:editItem bind:moveItem />
+            <FileMenu bind:toggleFileMenu bind:createNewItem bind:editItem />
 
             {#if allFiles.length > 0}
                 <ul>
@@ -369,7 +375,7 @@
                                             bind:value={newItemName}
                                             on:keydown={(e) => saveNewItem(e, file)}
                                             placeholder={file.is_dir ? "New Folder" : "New File"}
-                                            autofocus
+                                            use:focusOnMount
                                     />
                                 </div>
                                 {#if errorMessage}

@@ -488,5 +488,5 @@
 </div>
 <style lang="scss">
     @use '../style/editor';
-    .code-editor--highlight .find-match { background: rgba(255, 196, 0, 0.35); outline: 1px solid rgba(255, 196, 0, 0.6); border-radius: 2px; }
+    :global(.code-editor--highlight .find-match) { background: rgba(255, 196, 0, 0.35); outline: 1px solid rgba(255, 196, 0, 0.6); border-radius: 2px; }
 </style>

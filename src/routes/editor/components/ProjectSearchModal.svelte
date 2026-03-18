@@ -35,7 +35,7 @@
 </script>
 
 {#if open}
-    <div class="project-search-modal" on:keydown={onKeyDown}>
+    <div class="project-search-modal" on:keydown={onKeyDown} role="dialog" tabindex="0">
         <div class="modal-card">
             <div class="modal-header">
                 <h3>Project Search</h3>
@@ -48,12 +48,19 @@
                     <input class="replacement" type="text" placeholder="Replace with (optional)"
                            bind:value={replacement}
                            on:input={() => dispatch('updateReplacement', { value: replacement })}/>
-                    <label><input type="checkbox" bind:checked={caseSensitive}
+                    <label class="inline"><input type="checkbox" bind:checked={caseSensitive}
                                   on:change={() => dispatch('updateCase', { value: caseSensitive })}/>
                         Case-sensitive</label>
                     <button on:click={() => dispatch('search')} disabled={busy}>Search</button>
                     <button on:click={() => dispatch('preview')} disabled={busy || !query}>Preview</button>
                     <button on:click={() => dispatch('replace')} disabled={busy || !query}>Replace</button>
+                    <label class="inline"><input type="checkbox" bind:checked={searchNames}/> Names</label>
+                    {#if searchNames}
+                      <span class="name-filters">
+                        <label class="inline"><input type="checkbox" bind:checked={includeFiles}/> Files</label>
+                        <label class="inline"><input type="checkbox" bind:checked={includeDirs}/> Folders</label>
+                      </span>
+                    {/if}
                 </div>
                 <div class="results">
                     {#if busy}
@@ -67,10 +74,12 @@
                             {:else}
                               <ul>
                                 {#each pathResults as p}
-                                  <li class="result path-result" on:click={() => dispatch('openPath', p)}>
-                                    <div class="path">{p.path}</div>
-                                    <div class="loc">{p.is_dir ? 'folder' : 'file'}</div>
-                                    <div class="preview">{p.name}</div>
+                                  <li class="result path-result">
+                                    <button type="button" class="result-button" on:click={() => dispatch('openPath', p)}>
+                                      <div class="path">{p.path}</div>
+                                      <div class="loc">{p.is_dir ? 'folder' : 'file'}</div>
+                                      <div class="preview">{p.name}</div>
+                                    </button>
                                   </li>
                                 {/each}
                               </ul>
@@ -85,10 +94,12 @@
                           {:else}
                             <ul>
                                 {#each results as r}
-                                    <li class="result" on:click={() => dispatch('openResult', r)}>
+                                    <li class="result">
+                                      <button type="button" class="result-button" on:click={() => dispatch('openResult', r)}>
                                         <div class="path">{r.path}</div>
                                         <div class="loc">{r.line}:{r.column}</div>
                                         <div class="preview">{r.line_text}</div>
+                                      </button>
                                     </li>
                                 {/each}
                             </ul>
@@ -204,17 +215,27 @@
   }
 
   .result {
-    padding: 10px 8px;
+    padding: 0; /* moved padding to button */
     border-radius: 8px;
     border-bottom: 1px solid var(--secondary-200);
-    cursor: pointer;
+    display: block;
+  }
+
+  .result-button {
     display: grid;
     grid-template-columns: 1fr auto;
     grid-template-rows: auto auto;
-    grid-column-gap: 10px;
+    column-gap: 10px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 10px 8px;
+    color: inherit;
   }
 
-  .result:hover {
+  .result-button:hover {
     background: var(--secondary-100);
   }
 

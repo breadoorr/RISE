@@ -9,7 +9,6 @@
     export let createNewItem: (isDir: boolean, parentPath: string, onNameConfirmed: (name: string) => Promise<void>) => void;
 
     export let editItem: (isDir: boolean, parentPath: string, onNameConfirmed: (name: string) => Promise<void>) => void;
-    export let moveItem: (path: string, newPath: string) => void;
 
     let Actions: Array<string> = [];
     let projectPath = "";

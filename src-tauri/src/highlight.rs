@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::Mutex;
 use lazy_static::lazy_static;
-use serde::Serialize;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Point, Query, QueryCursor, QueryMatches, Tree};
 
@@ -124,15 +123,13 @@ fn next_line_end(text: &str, byte_idx: usize) -> usize {
     let bytes = text.as_bytes();
     let mut i = byte_idx.min(bytes.len());
     while i < bytes.len() {
-        if bytes[i] == b'\n' { i += 1; break; }
+        if bytes[i] == b'\n' {
+            i += 1;
+            break;
+        }
         i += 1;
     }
     i
-}
-
-#[derive(Serialize)]
-pub struct HighlightResult {
-    pub html: String,
 }
 
 pub fn find_matches<'a>(code: String, matches: &mut QueryMatches<&'a[u8], &'a[u8]>, query: &Query, seen: &mut HashSet<(usize, usize)>, final_spans: &mut Vec<(usize, usize, String)>) {

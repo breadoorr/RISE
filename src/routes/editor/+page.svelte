@@ -462,7 +462,7 @@
   let projPathResults: { path: string; name: string; is_dir: boolean }[] = [];
   let projBusy = false;
   let lastShiftTime = 0;
-  let searchNames = false;
+  let searchNames = true;
   let includeFiles = true;
   let includeDirs = true;
 
@@ -623,10 +623,56 @@
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   });
+
+  async function exitProject() {
+    try {
+      // Prompt if current buffer has unsaved edits
+      if (isEdited) {
+        const ok = confirm('You have unsaved changes in the current file. Exit to Home anyway?');
+        if (!ok) return;
+      }
+      // Best effort: clear backend watcher by attempting to open_project with an invalid path will error; ignore
+      // Remove persisted project and reset store
+      try { localStorage.removeItem('projectPath'); } catch {}
+
+      // Reset central store state
+      fileStore.update((state:any) => ({
+        ...state,
+        files: [],
+        projectPath: null,
+        project: null,
+        selectedFile: null,
+      }));
+
+      // Clear local UI/editor state
+      openFiles = [];
+      activeFileIndex = -1;
+      selectedFile = null;
+      fileContent = '';
+      editorContent = '';
+      lastBufferContent = '';
+      isEdited = false;
+      updateLineNumbers('');
+      if (editorElement) editorElement.value = '';
+
+      // Navigate to main page
+      window.location.href = '/';
+    } catch (e) {
+      console.error('Failed to exit project', e);
+      // Fallback navigation even on error
+      window.location.href = '/';
+    }
+  }
 </script>
 
 <Menu Actions={actions} x={x} y={y} isMenuOpen={isSettingOpen} triggerAction={(action) => {
     if (projects) {
+        if (action === 'Exit to Home') {
+            exitProject();
+            isSettingOpen = false;
+            projects = false;
+            return;
+        }
         const target = PROJECTS.find(p => p.name === action);
         if (target) {
             localStorage.setItem('projectPath', target.path)
@@ -648,7 +694,7 @@
         isSettingOpen = !isSettingOpen;
         x = e.clientX;
         y = 30;
-        actions = PROJECTS.map(p => p.name);
+        actions = [...PROJECTS.map(p => p.name), 'Exit to Home'];
         projects = true;
     }}>
         {projectName ?? 'Untitled'}
@@ -778,19 +824,4 @@
 
 <style lang="scss">
   @use 'style/main';
-  .project-search-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: flex-start; justify-content: center; padding-top: 10vh; z-index: 50; }
-  .project-search-modal .modal-card { width: min(960px, 90vw); max-height: 80vh; background: #1e1e1e; color: #ddd; border: 1px solid #444; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); display: flex; flex-direction: column; }
-  .project-search-modal .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid #333; }
-  .project-search-modal .modal-header .close { background: transparent; border: none; color: #ddd; font-size: 20px; cursor: pointer; }
-  .project-search-modal .modal-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
-  .project-search-modal .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .project-search-modal input { background: #222; color: #ddd; border: 1px solid #444; padding: 6px 8px; border-radius: 6px; }
-  .project-search-modal button { background: #333; color: #ddd; border: 1px solid #555; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
-  .project-search-modal .results { overflow: auto; max-height: 60vh; border-top: 1px solid #333; }
-  .project-search-modal ul { list-style: none; margin: 0; padding: 0; }
-  .project-search-modal .result { padding: 8px 6px; border-bottom: 1px solid #2a2a2a; cursor: pointer; }
-  .project-search-modal .result:hover { background: #2a2a2a; }
-  .project-search-modal .result .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; opacity: 0.9; }
-  .project-search-modal .result .loc { font-size: 12px; opacity: 0.8; }
-  .project-search-modal .result .preview { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 </style>

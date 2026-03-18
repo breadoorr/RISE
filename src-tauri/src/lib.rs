@@ -101,8 +101,8 @@ pub fn run() {
             let window = win_builder.build().unwrap();
             #[cfg(target_os = "macos")]
             unsafe {
-                use cocoa::appkit::{NSColor, NSWindow};
-                use cocoa::base::{id, nil};
+                use cocoa::appkit::NSWindow;
+                use cocoa::base::id;
 
                 let ns_window = window.ns_window().unwrap() as id;
                 ns_window.setTitleVisibility_(NSWindowTitleVisibility::NSWindowTitleHidden);

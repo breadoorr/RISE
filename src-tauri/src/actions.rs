@@ -179,13 +179,6 @@ fn delete_file(path: &String) {
         .expect("Failed to delete directory");
 }
 
-fn copy(path: &String) {
-    let new_path = Path::new(path);
-    fs::copy(new_path, new_path)
-        .map_err(|e| format!("Failed to copy file: {}", e))
-        .expect("Failed to copy file");
-}
-
 fn move_file(path: &String, n_path: &String) {
     fs::rename(path, n_path)
         .map_err(|e| format!("Failed to rename file: {}", e))
@@ -200,7 +193,7 @@ fn move_folder(path: &String, n_path: &String) {
     println!("Renamed folder: {} to {}", path, n_path);
 }
 
-fn copy_path(path: &String) {}
+fn copy_path(_path: &String) {}
 
 fn rename(path: &String, n_path: &String) {
     // let path = Path::new(path);

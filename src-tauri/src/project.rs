@@ -58,7 +58,7 @@ fn npm_run_configs(dir: &Path) -> Vec<RunConfig> {
         if let Ok(json) = serde_json::from_str::<JsonValue>(&text) {
             if let Some(scripts) = json.get("scripts").and_then(|v| v.as_object()) {
                 for (name, cmd) in scripts.iter() {
-                    if let Some(cmd_str) = cmd.as_str() {
+                    if let Some(_cmd_str) = cmd.as_str() {
                         configs.push(RunConfig {
                             id: format!("npm:{}", name),
                             name: format!("npm run {}", name),

@@ -1,39 +1,24 @@
-use crate::highlight::{calculate_edit, escape_html, highlight_ast};
+use crate::highlight::calculate_edit;
 use crate::project::{Project, ProjectType, RunConfig};
 use crate::theme::reload_theme;
 use hostname;
 use lazy_static::lazy_static;
-use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::collections::{HashMap, HashSet};
-use std::io::{self, Read};
+use std::collections::HashMap;
+use std::io::Read;
 use std::fs::File;
-use std::sync::Mutex;
-use streaming_iterator::StreamingIterator;
-use crate::highlight::{escape_html, calculate_edit, highlight_ast};
-use serde_json;
-use crate::theme::reload_theme;
-use tauri::State;
-use tauri::Emitter;
-use std::ffi::OsStr;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::prelude::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use streaming_iterator::StreamingIterator;
 use tauri::AppHandle;
 use tauri::Emitter;
-use nix;
-#[cfg(target_family = "unix")]
-use nix::sys::signal::{killpg, Signal};
-#[cfg(target_family = "unix")]
-use nix::unistd::Pid;
 
 #[derive(Clone, Debug)]
 struct EditEntry {
@@ -615,7 +600,7 @@ pub async fn is_directory(path: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn get_line_count(path: String) -> Result<usize, String> {
-    let mut map = EDITOR_BUFFERS
+    let map = EDITOR_BUFFERS
         .lock()
         .map_err(|_| "lock poisoned".to_string())?;
     let content = if let Some(buf) = map.get(&path) {
@@ -896,7 +881,7 @@ pub async fn search_paths_in_project(
 }
 
 #[tauri::command]
-pub async fn search_in_project(root_path: String, query: String, case_sensitive: bool, regex: bool, max_results: Option<usize>) -> Result<Vec<SearchResultItem>, String> {
+pub async fn search_in_project(root_path: String, query: String, case_sensitive: bool, max_results: Option<usize>) -> Result<Vec<SearchResultItem>, String> {
     if query.is_empty() { return Ok(vec![]); }
     let root = Path::new(&root_path);
     if !root.exists() || !root.is_dir() {
@@ -1061,43 +1046,47 @@ pub fn start_process(
 
     args.push(command.clone());
 
-    // ---------- SPAWN PROCESS ----------
+    // ---------- SPAWN PROCESS (platform-specific) ----------
+    let mut child: Child;
+
     #[cfg(target_family = "unix")]
-    let mut child = {
+    {
         let mut cmd = Command::new(&prog);
         cmd.current_dir(&cwd)
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .before_exec(|| {
-                unsafe {
-                    libc::setsid(); // Create new process group
-                }
+            .stderr(Stdio::piped());
+        // Detach process group on Unix so we can kill by group later
+        unsafe {
+            use std::os::unix::prelude::CommandExt;
+            cmd.pre_exec(|| {
+                libc::setsid(); // Create new process group
                 Ok(())
             });
+        }
+        child = cmd.spawn().map_err(|e| format!("Failed to start process: {}", e))?;
+    }
 
-        cmd.spawn()
-            .map_err(|e| format!("Failed to start process: {}", e))?
-    };
+    #[cfg(target_os = "windows")]
+    {
+        child = Command::new(&prog)
+            .current_dir(&cwd)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to start process: {}", e))?;
+    }
 
-    let proc_id = child.id().clone().to_string();
+    let proc_id = child.id().to_string();
     println!("Started process {} ({})", proc_id, command.clone());
     {
         // Record PID separately to avoid locking Child during kill
         let mut preg = PROC_PIDS.lock().unwrap();
         preg.insert(proc_id.clone(), child.id() as i32);
     }
-
-    #[cfg(target_os = "windows")]
-    let mut child = Command::new(&prog)
-        .current_dir(&cwd)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start process: {}", e))?;
 
     let stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
