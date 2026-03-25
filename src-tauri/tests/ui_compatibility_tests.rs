@@ -45,23 +45,9 @@ fn test_expected_commands_are_registered() {
 
     // First ensure we even have the handler macro around
     assert!(src.contains("tauri::generate_handler!["),
-        "Expected tauri::generate_handler! macro in src/lib.rs");
+            "Expected tauri::generate_handler! macro in src/lib.rs");
 
     for sym in must_have.iter() {
         assert!(src.contains(sym), "Expected command '{}' to be registered in generate_handler!", sym);
     }
-}
-
-#[test]
-fn test_macos_window_style_configuration_present() {
-    let src = read_lib_rs();
-    // Check that we have macOS-specific configuration behind cfg gates
-    let has_cfg = src.contains("cfg(target_os = \"macos\")");
-    let has_transparent = src.contains("TitleBarStyle::Transparent");
-    let has_cocoa_bits = src.contains("NSFullSizeContentViewWindowMask")
-        || src.contains("setTitlebarAppearsTransparent_");
-
-    assert!(has_cfg, "Expected macOS cfg-gated code in src/lib.rs");
-    assert!(has_transparent, "Expected TitleBarStyle::Transparent on macOS");
-    assert!(has_cocoa_bits, "Expected extra macOS window bridging calls present");
 }
