@@ -1,4 +1,6 @@
 <script lang="ts">
+    
+    // Component for a menu display, general one that displays needed actions and triggers passed functionality
     export let Actions: string[] = [];
     export let isMenuOpen = false;
     export let x = 0;

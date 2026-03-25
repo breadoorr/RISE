@@ -1,4 +1,7 @@
 <script lang="ts">
+    
+    // Search modal component, to search around the project
+    
     import {createEventDispatcher} from 'svelte';
 
     export let open: boolean = false;
@@ -7,8 +10,6 @@
     export let replacement: string = '';
     export let caseSensitive: boolean = false;
     export let results: { path: string; line: number; column: number; line_text: string }[] = [];
-
-    // New: path/file/folder search controls and results
     export let searchNames: boolean = true;
     export let includeDirs: boolean = true;
     export let includeFiles: boolean = true;
@@ -261,8 +262,7 @@
     text-overflow: ellipsis;
     opacity: 0.95;
   }
-
-  /* New sections for name vs content results */
+  
   .section { margin-top: 8px; }
   .section-title {
     font-size: 12px; font-weight: 600; opacity: 0.8; margin: 6px 2px; text-transform: uppercase; letter-spacing: 0.02em;

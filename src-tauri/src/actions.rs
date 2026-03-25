@@ -1,7 +1,9 @@
+// Actions with files, folders
+
 use crate::commands::FileEntry;
 use std::fs;
 use std::path::Path;
-
+// set of all available actions
 #[derive(Debug)]
 enum Actions {
     RenameFile,
@@ -36,7 +38,7 @@ impl From<String> for Actions {
         }
     }
 }
-
+// functions to turn enums to strings and back
 impl From<Actions> for String {
     fn from(s: Actions) -> Self {
         match s {
@@ -55,7 +57,7 @@ impl From<Actions> for String {
         }
     }
 }
-
+// sets of actions divided on files and folders
 const FILE_ACTIONS: [Actions; 4] = [
     Actions::RenameFile,
     Actions::DeleteFile,
@@ -80,7 +82,7 @@ pub fn get_actions(is_dir: bool) -> Vec<String> {
 
     FILE_ACTIONS.map(|x| x.into()).into()
 }
-
+// function that performs a chosen action, some of them are not really functioning, due to the limited time
 #[tauri::command]
 pub fn perform_action(file: FileEntry, action: String, new_name: String) {
     println!(

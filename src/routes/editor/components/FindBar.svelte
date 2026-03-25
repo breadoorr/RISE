@@ -1,4 +1,7 @@
 <script lang="ts">
+  
+  // Component to search in the file
+  
   import { createEventDispatcher, onMount } from 'svelte';
 
   export let visible: boolean = false;

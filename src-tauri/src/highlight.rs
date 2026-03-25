@@ -194,7 +194,7 @@ pub fn highlight_ast(code: String, language: String, path: String) -> Result<Vec
     let parser = parsers.get_mut(&language).unwrap();
     let old_tree_ref = trees.get(&path);
     let new_tree = parser.parse(&code, old_tree_ref);
-    if let Some(tree) = new_tree {
+    if let Some(tree) = new_tree { // Language relation tree, split code into logic tree
         let query = queries.get(&language).unwrap();
         let mut cursor = QueryCursor::new();
 
@@ -266,6 +266,7 @@ pub fn highlight_ast(code: String, language: String, path: String) -> Result<Vec
     }
 }
 
+// Function that converts found matches into colored html text spans that will be rendered
 #[tauri::command]
 pub fn highlight_html(
     language: String,

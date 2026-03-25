@@ -30,7 +30,7 @@ pub struct EditorBuffer {
     pub(crate) content: String,
     undo_stack: Vec<EditEntry>,
 }
-
+//static created sets of needed data, and variables
 lazy_static! {
     pub static ref EDITOR_BUFFERS: Mutex<HashMap<String, EditorBuffer>> = Mutex::new(HashMap::new());
     pub static ref CONFIG_FILE: String = Path::new("/Users/ddorabble/RISE").to_string_lossy().into_owned();
@@ -73,6 +73,7 @@ struct OldAppConfig {
     theme: String,
 }
 
+// Load project configs from the config file
 fn load_config() -> AppConfig {
     let path = Path::new(&*CONFIG_FILE);
     if !path.exists() {

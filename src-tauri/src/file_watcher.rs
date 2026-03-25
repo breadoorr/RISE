@@ -8,7 +8,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-// Self-write suppression: backend operations can mark paths here
 lazy_static! {
     static ref RECENT_WRITES: Mutex<VecDeque<(PathBuf, Instant)>> = Mutex::new(VecDeque::new());
     static ref CONTROL_TX: Mutex<Option<Sender<ControlMsg>>> = Mutex::new(None);
@@ -20,7 +19,7 @@ enum ControlMsg {
     Shutdown,
 }
 
-// Public API: mark a path as written by the app (to filter echo events)
+// Mark a path as written by the app (to filter echo events)
 pub fn mark_self_write<P: AsRef<Path>>(path: P) {
     let mut q = RECENT_WRITES.lock().unwrap();
     let now = Instant::now();
@@ -31,7 +30,7 @@ pub fn mark_self_write<P: AsRef<Path>>(path: P) {
     }
 }
 
-// Public API: set or change the watched project path (starts worker on first use)
+// Set or change the watched project path (starts worker on first use)
 pub fn set_watched_path(app: AppHandle, path: String) {
     let mut guard = CONTROL_TX.lock().unwrap();
     if guard.is_none() {

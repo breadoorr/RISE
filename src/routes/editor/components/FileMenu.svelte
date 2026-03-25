@@ -1,4 +1,7 @@
 <script lang="ts">
+    
+    // Component for a file menu, has its own logic on getting actions and performing needed ones
+    
     import { invoke } from "@tauri-apps/api/core";
     import { join, dirname } from "@tauri-apps/api/path";
     import {refreshPathInStore} from "$lib/stores/fileStore";

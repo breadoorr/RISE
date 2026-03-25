@@ -72,6 +72,7 @@
         return false;
     }
 
+    //resize for sidebar panel
     function handleResize(event: MouseEvent) {
         const startX = event.clientX;
         const startWidth = sidebarWidth;
@@ -93,6 +94,7 @@
         window.addEventListener("mouseup", onMouseUp);
     }
 
+    // toggle functions to open/close panels
     function toggleSidebar() {
         const newWidth = isSidebarOpen ? 0 : 300;
         dispatch("toggleSidebar", { width: newWidth });
@@ -102,6 +104,7 @@
         dispatch("toggleTerminal");
     }
 
+    // function for creating new files/folders
     createNewItem = (isDir: boolean, parentPath: string | null, onNameConfirmed: (name: string) => Promise<void>) => {
         currentOnNameConfirmed = onNameConfirmed;
         const targetPath = parentPath || projectPath;
@@ -120,9 +123,7 @@
             isEditing: true,
             temp: true,
         };
-
-        console.log("Creating new item:", newItem);
-
+        //positioning an input to the correct place in the file structure
         const position = allFiles.findIndex(f => f.path === parentPath);
         if (position !== -1) {
             allFiles.find(f => f.path === parentPath)!.expanded = true;
@@ -134,7 +135,7 @@
         newItemName = "";
         errorMessage = null;
     };
-
+    // renaming files/folders
     editItem = (isDir: boolean, path: string, onNameConfirmed: (name: string) => Promise<void>) => {
         const item = allFiles.find(f => f.path === path);
         if (item) {
@@ -195,7 +196,7 @@
         window.addEventListener('mousemove', handleGlobalMouseMove);
         window.addEventListener('mouseup', handleGlobalMouseUp, { once: true });
     }
-
+    // custom drag and drop event
     function handleGlobalMouseMove(event: MouseEvent) {
         if (!pressedItem) return;
         const dx = Math.abs(event.clientX - pressStartX);
@@ -238,7 +239,7 @@
             suppressClick = true; // prevent click after drag
         }
     }
-
+    // part of a custom drag and drop to identify where the file/folder can be moved
     function findHoverTargetPath(x: number, y: number): string | null {
         const el = document.elementFromPoint(x, y) as HTMLElement | null;
         if (!el) return null;
@@ -279,7 +280,7 @@
             }
         }
     }
-
+    // move file/folder
     moveItem = async (sourcePath: string, newPath: string) => {
         console.log("Moving item:", sourcePath, "to", newPath);
         const item = allFiles.find(f => f.path === sourcePath);
@@ -293,6 +294,7 @@
         if (newParent && newParent !== oldParent) await refreshPathInStore(newParent);
     };
 
+    // saving a new file/folder
     async function saveNewItem(event: KeyboardEvent, item: FileEntry) {
         if (event.key === "Enter") {
             const validationError = validateName(newItemName, item.is_dir, item.parent_dir, item.temp ? null : item.path);

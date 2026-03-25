@@ -21,8 +21,6 @@
   export let currentColumn: number = 1;
   export let highlightHtml: string = "";
   export let isEdited: boolean = false;
-
-  // Tab callbacks remain (tab switching/closing still handled by parent for minimal changes)
   export let onTabClick: (index: number) => void = () => {};
   export let onTabClose: (index: number, event: MouseEvent) => void = () => {};
 
@@ -57,6 +55,7 @@
   let currentMatch = 0;
   let findBarRef: any;
 
+  // find matches
   function recomputeMatches() {
     matchIndices = [];
     if (!findQuery || !editorContent) { return; }
@@ -73,6 +72,7 @@
     if (currentMatch >= matchIndices.length) currentMatch = 0;
   }
 
+  // jumping to next/previous find match
   function jumpToMatch(i: number) {
     if (!editorElement || matchIndices.length === 0) return;
     const len = findQuery.length;
@@ -97,6 +97,8 @@
     const prev = (currentMatch - 1 + matchIndices.length) % matchIndices.length;
     jumpToMatch(prev);
   }
+  
+  // replace functionality
   async function replaceOne() {
     if (!selectedFile || matchIndices.length === 0) return;
     const start = matchIndices[currentMatch];
@@ -285,6 +287,7 @@
     }
   }
 
+  // handling any changes, typing, file opening/selection
   async function handleEditorChange(event: Event) {
     const target = event.target as HTMLTextAreaElement;
     if (target === editorElement && target.value !== undefined) {
@@ -315,6 +318,7 @@
     }
   }
 
+  // auto saving file changes
   async function autoSave() {
     if (isEdited && selectedFile && fileContent !== "Cannot display contents of the file") {
       try {
@@ -359,6 +363,7 @@
     return 'typescript';
   }
 
+  // highlighting the text in the editor
   function scheduleHighlight() {
     if (!selectedFile || fileContent === "Cannot display contents of the file") {
       highlightHtml = '';
@@ -413,9 +418,7 @@
       alert("Error saving file: " + error);
     }
   }
-
-  // React: when selectedFile or content changes, ensure UI updates
-  // Reactive: update matches when query/content or options change
+  
   $: if (showFind) { void editorContent; void findQuery; void findCaseSensitive; recomputeMatches(); scheduleHighlight(); }
 
   $: if (selectedFile !== null) {

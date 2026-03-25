@@ -160,7 +160,6 @@
   background-color: var(--background-100);
   border: 1px solid var(--secondary-500);
   border-top: none;
-  /* Allow the inner xterm viewport to display its own scrollbar */
   overflow: hidden;
 }
 

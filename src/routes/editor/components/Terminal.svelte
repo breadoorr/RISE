@@ -44,6 +44,7 @@
     let shellMenuOpen: boolean = false;
     let defaultShellId: string = 'sh';
 
+    // shell options for different os
     const shellOptions: { id: string; label: string; os: 'unix' | 'mac' | 'win' | 'any' }[] = [
         { id: 'zsh', label: 'zsh', os: 'mac' },
         { id: 'bash', label: 'bash', os: 'unix' },
@@ -55,6 +56,7 @@
     const isWindows = navigator.userAgent.toLowerCase().includes('windows');
     const isMac = navigator.userAgent.toLowerCase().includes('mac');
 
+    // dynamic theme for terminal
     function getCssVar(name: string): string {
         // Prefer variables defined on body (theme classes are applied to body), fallback to :root
         const bodyVal = getComputedStyle(document.body).getPropertyValue(name);
@@ -89,6 +91,7 @@
 
     let themeObserver: MutationObserver | null = null;
 
+    // generate unique name for each shell tab
     function nextTabTitleForShell(shellId: string): string {
         const existingCount = terminalTabs.filter(t => t.shellId === shellId).length;
         if (existingCount === 0) return `${shellId}`;
@@ -102,6 +105,7 @@
     // Aggregate running state for parent binding
     $: isCommandRunning = terminalTabs.some(t => t.runningProcId);
 
+    // function to stop running process
     async function stopActiveProcess() {
         const tab = getActiveTab();
         if (!tab) return;
@@ -114,6 +118,7 @@
         }
     }
 
+    // check if command is potentially long running
     function isLongRunning(command: string): boolean {
         const c = command.trim();
         return (
@@ -168,7 +173,6 @@
                 if (procId === "") {
                     procId = payload.id;
                     tab.runningProcId = procId;
-                    // ensure header updates even if array reference doesn't change
                     isCommandRunning = true;
                 }
                 term.write(String(payload.data || ''));
@@ -209,7 +213,7 @@
     }
 
     function createTerminalTab(shellId: string) {
-        const id = `tab-${Date.now()}-${Math.floor(Math.random()*10000)}`;
+        const id = `tab-${Date.now()}-${Math.floor(Math.random()*10000)}`; // random unique id
         const cwd = projectPath || home || '';
         const tab: TerminalTab = {
             id,
@@ -308,9 +312,6 @@
                     await invoke('kill_process', { procId: tab.runningProcId }).catch(() => {});
                 }
             }
-            // NOTE: We intentionally do NOT handle printable characters here.
-            // Text input (including paste) is handled in the onData listener below
-            // so that pastes correctly update commandBuffer.
         });
 
         // Handle text input and paste uniformly so commandBuffer stays in sync with xterm
@@ -379,6 +380,7 @@
         setTimeout(() => { tab.fitAddon?.fit(); term.scrollToBottom(); }, 0);
     }
 
+    // generate the starting line in the terminal ( ddorabble@ddorabble-2 RISE % )
     function getPromptFor(tab: TerminalTab): string {
         const dir = tab.cwd.split(/[\/\\]/).pop() || '';
         let shellText = `${user}@${host} ${dir} % `;
@@ -388,6 +390,7 @@
         return shellText;
     }
 
+    // handle cd command separately to update the working directory
     async function handleCdCommandFor(tab: TerminalTab, command: string) {
         const target = command.slice(3);
         try {
@@ -452,6 +455,7 @@
         setTimeout(() => { tab?.fitAddon?.fit(); tab?.terminal?.focus(); tab?.terminal?.scrollToBottom(); }, 0);
     }
 
+    // closing terminal tab and killing any running processes
     async function closeTerminalTab(id: string, e?: MouseEvent) {
         if (e) e.stopPropagation();
         const idx = terminalTabs.findIndex(t => t.id === id);
@@ -484,6 +488,7 @@
         }
     }
 
+    // on mount of the component getting the shell, openning the new shell
     onMount(async () => {
         try {
             defaultShellId = await invoke('get_default_shell') as string;

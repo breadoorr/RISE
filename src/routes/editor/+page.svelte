@@ -119,7 +119,6 @@
             };
             localStorage.setItem(key, JSON.stringify(state));
         } catch (e) {
-            // best-effort only
             console.warn('saveWorkspace failed', e);
         }
     }
@@ -127,7 +126,7 @@
     async function restoreExpanded(paths: string[]) {
         // Expand each saved directory path sequentially to ensure children are loaded
         for (const p of paths) {
-            try { await expandFolderInSidebar(p); } catch (e) { /* ignore */ }
+            try { await expandFolderInSidebar(p); } catch (e) {  }
         }
     }
 
@@ -146,7 +145,7 @@
                 } else {
                     openedIndices.push(openFiles.length - 1);
                 }
-            } catch { /* ignore */ }
+            } catch {  }
         }
         if (active) {
             const idx = openFiles.findIndex(f => f.path === active);
@@ -212,6 +211,7 @@
         y = 30;
     }
 
+    // Run selected config
     async function applySelectedRunByName(name: string) {
         const id = runNameToId[name] || name;
         if (!projectPath) return;
@@ -231,6 +231,7 @@
         return selectedFile || null;
     }
 
+    // Build run command for current file
     function buildRunCommandForCurrentFile(): { cmd: string, cwd: string } | null {
         const filePath = getActiveFilePath();
         if (!filePath || !projectPath) return null;
@@ -777,7 +778,7 @@
         const ok = confirm('You have unsaved changes in the current file. Exit to Home anyway?');
         if (!ok) return;
       }
-      // Best effort: clear backend watcher by attempting to open_project with an invalid path will error; ignore
+      
       // Remove persisted project and reset store
       try { localStorage.removeItem('projectPath'); } catch {}
 

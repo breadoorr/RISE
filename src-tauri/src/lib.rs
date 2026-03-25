@@ -1,3 +1,4 @@
+// Main entry point of the program
 mod commands;
 pub mod highlight;
 pub mod theme;

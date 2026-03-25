@@ -119,14 +119,14 @@ lazy_static! {
     static ref ACTIVE_THEME: RwLock<Theme> = RwLock::new(load_theme_from_config());
 }
 
-/// Reload theme from config at runtime (e.g., call on app start or when user changes theme)
+// Reload theme from config at runtime (e.g., call on app start or when user changes theme)
 pub fn reload_theme() {
     let mut t = ACTIVE_THEME.write().expect("theme lock poisoned");
     *t = load_theme_from_config();
 }
 
-/// Testing helper: set the active theme directly from a JSON string.
-/// Returns true if the JSON parsed successfully.
+// Testing helper: set the active theme directly from a JSON string.
+// Returns true if the JSON parsed successfully.
 pub fn set_active_theme_from_json(json: &str) -> bool {
     match parse_vscode_theme_str(json) {
         Ok(theme) => {
@@ -138,7 +138,7 @@ pub fn set_active_theme_from_json(json: &str) -> bool {
     }
 }
 
-// Public API: get the formatted style for a given kind/scope
+// Get the formatted style for a given kind/scope
 pub fn get_style_for_kind(kind: &str) -> Option<String> {
     fn style_from_scope(scope: &str) -> Option<String> {
         let scope_lc = scope.to_lowercase();

@@ -67,7 +67,6 @@
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
-  //z-index: 100;
 
   &:hover {
     color: var(--text-950);
@@ -132,14 +131,13 @@
   overflow: hidden;
   background-color: var(--background-100);
   position: relative;
-  //height: calc(100vh - 30px);
 }
 
 /* Highlight overlay positioned above background but below textarea */
 .code-editor--highlight {
   position: absolute;
   top: 0;
-  left: 53px; /* matches .line-numbers width */
+  left: 53px;
   right: 0;
   bottom: 0;
   pointer-events: none;
