@@ -1,6 +1,6 @@
 [package]
 name = "rise"
-version = "0.0.6"
+version = "0.0.7"
 description = "RISE IDE build for success"
 authors = ["you"]
 edition = "2021"
