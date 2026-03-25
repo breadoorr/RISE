@@ -8,10 +8,10 @@ use std::sync::RwLock;
 use crate::commands;
 
 #[derive(Debug, Default, Clone)]
-struct Style {
-    color: Option<String>,
-    bold: bool,
-    italic: bool,
+pub struct Style {
+    pub color: Option<String>,
+    pub bold: bool,
+    pub italic: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +123,19 @@ lazy_static! {
 pub fn reload_theme() {
     let mut t = ACTIVE_THEME.write().expect("theme lock poisoned");
     *t = load_theme_from_config();
+}
+
+/// Testing helper: set the active theme directly from a JSON string.
+/// Returns true if the JSON parsed successfully.
+pub fn set_active_theme_from_json(json: &str) -> bool {
+    match parse_vscode_theme_str(json) {
+        Ok(theme) => {
+            let mut t = ACTIVE_THEME.write().expect("theme lock poisoned");
+            *t = theme;
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 // Public API: get the formatted style for a given kind/scope

@@ -1,14 +1,9 @@
 mod commands;
-mod highlight;
-mod theme;
+pub mod highlight;
+pub mod theme;
 mod actions;
 mod file_watcher;
 mod project;
-
-#[cfg(target_os = "macos")]
-use cocoa::appkit::{NSWindowStyleMask, NSWindowTitleVisibility};
-#[cfg(target_os = "macos")]
-use cocoa::base::YES;
 
 pub use commands::{
     get_recent_projects,
@@ -47,8 +42,10 @@ pub use commands::{
 pub use highlight::highlight_html;
 pub use actions::{get_actions, perform_action};
 pub use file_watcher::set_watched_path;
+pub use commands::FileEntry;
+pub use project::{Project, ProjectType, RunConfig};
 
-use tauri::{Manager, TitleBarStyle, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 pub fn run() {
     tauri::Builder::default()
@@ -95,23 +92,7 @@ pub fn run() {
                     .title("")
                     .inner_size(800.0, 600.0);
 
-            #[cfg(target_os = "macos")]
-            let win_builder = win_builder.title_bar_style(TitleBarStyle::Transparent);
-
             let window = win_builder.build().unwrap();
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use cocoa::appkit::NSWindow;
-                use cocoa::base::id;
-
-                let ns_window = window.ns_window().unwrap() as id;
-                ns_window.setTitleVisibility_(NSWindowTitleVisibility::NSWindowTitleHidden);
-                ns_window.setTitlebarAppearsTransparent_(YES);
-                ns_window.setStyleMask_(
-                    ns_window.styleMask()
-                        | NSWindowStyleMask::NSFullSizeContentViewWindowMask,
-                );
-            }
 
             // Hook save-on-exit: flush app config when window is closing
             if let Some(win) = app.get_webview_window("main") {

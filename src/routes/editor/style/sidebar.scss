@@ -98,6 +98,29 @@
   }
 }
 
+.drop-target .file-list-item { background: var(--secondary-300); }
+.drag-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  transform: translate(-50%, -50%);
+  background: var(--bg-200, rgba(0,0,0,0.15));
+  backdrop-filter: saturate(180%) blur(2px);
+  border: 1px solid var(--border-200, rgba(0,0,0,0.2));
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--fg-900, #222);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  font-size: 12px;
+  opacity: 0.95;
+}
+.drag-ghost .item-icon { display: flex; align-items: center; }
+.drag-ghost .name { white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+
+
 .file-list ul {
   list-style: none;
   padding-left: 0;

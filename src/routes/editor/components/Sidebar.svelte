@@ -30,6 +30,13 @@
     let currentOnNameConfirmed: ((name: string) => Promise<void>) | null = null;
     let draggedItem: FileEntry | null = null;
     let dropTargetPath: string | null = null;
+    let isDragging: boolean = false;
+    let pressedItem: FileEntry | null = null;
+    let pressStartX = 0;
+    let pressStartY = 0;
+    let suppressClick = false;
+    let dragX = 0;
+    let dragY = 0;
 
     // Action to focus an element on mount without using the autofocus attribute (avoids a11y warning)
     function focusOnMount(node: HTMLElement) {
@@ -41,13 +48,24 @@
     const validNameRegex = /^[a-zA-Z0-9 _-]([a-zA-Z0-9 _.-]*[a-zA-Z0-9 _-])?$/;
     const invalidChars = /[\/\\:*?"<>|]/;
 
+    // Safe wrapper around dirname that returns null if the path has no parent or is invalid
+    async function safeDirname(p: string): Promise<string | null> {
+        try {
+            return await dirname(p);
+        } catch (e) {
+            // e.g., virtual/temp paths or root without parent
+            return null;
+        }
+    }
+
     // Cross-platform check: is `child` located within `parent` (or equal)
     async function isDescendant(parent: string, child: string): Promise<boolean> {
+        if (!parent || !child) return false;
         if (parent === child) return true;
         let cur = child;
         while (true) {
-            const next = await dirname(cur);
-            if (next === cur) break; // reached filesystem root
+            const next = await safeDirname(cur);
+            if (!next || next === cur) break; // reached root or invalid
             if (next === parent) return true;
             cur = next;
         }
@@ -162,70 +180,117 @@
         return null;
     }
 
-    function handleDragStart(event: DragEvent, file: FileEntry) {
-        if (file.isEditing) return;
-        draggedItem = file;
-        event.dataTransfer!.setData('text/plain', file.path);
-        event.dataTransfer!.effectAllowed = 'move';
+    // Debounce timers for auto-expanding folders during hover (per-path)
+    const expandTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
+    function startPress(file: FileEntry, event: MouseEvent) {
+        if (file.isEditing || (file as any).temp) return; // block dragging for editing/temp items
+        if (event.button !== 0) return; // only left button
+        pressedItem = file;
+        pressStartX = event.clientX;
+        pressStartY = event.clientY;
+        dragX = event.clientX + 8;
+        dragY = event.clientY + 8;
+        isDragging = false;
+        window.addEventListener('mousemove', handleGlobalMouseMove);
+        window.addEventListener('mouseup', handleGlobalMouseUp, { once: true });
     }
 
-    async function handleDragOver(event: DragEvent, file: FileEntry) {
-        event.preventDefault();
-        event.stopPropagation();
-        console.log("Over");
-        if (!file.is_dir || !draggedItem || file.path === draggedItem.path || await isDescendant(draggedItem.path, file.path)) return;
-        if (!file.expanded) file.expanded = true;
-        if (file.expanded && (!file.children || file.children.length === 0)) {
-            try {
-                file.children = await loadFilesUtil(file.path, (file.level || 0) + 1);
-            } catch (e) {
-                console.error('Failed to load children for', file.path, e);
+    function handleGlobalMouseMove(event: MouseEvent) {
+        if (!pressedItem) return;
+        const dx = Math.abs(event.clientX - pressStartX);
+        const dy = Math.abs(event.clientY - pressStartY);
+        const threshold = 5;
+        if (!isDragging && (dx > threshold || dy > threshold)) {
+            isDragging = true;
+            draggedItem = pressedItem;
+        }
+        if (!isDragging) return;
+        // update ghost position regardless, so it appears as soon as dragging starts
+        dragX = event.clientX + 8;
+        dragY = event.clientY + 8;
+        if (!draggedItem) return;
+        const targetPath = findHoverTargetPath(event.clientX, event.clientY);
+        updateDropTarget(targetPath);
+    }
+
+    async function handleGlobalMouseUp(event: MouseEvent) {
+        window.removeEventListener('mousemove', handleGlobalMouseMove);
+        const wasDragging = isDragging;
+        isDragging = false;
+        const source = draggedItem;
+        const targetPath = dropTargetPath;
+        pressedItem = null;
+        draggedItem = null;
+        const finalTargetPath = findHoverTargetPath(event.clientX, event.clientY) || targetPath;
+        // Clear hover highlight
+        updateDropTarget(null);
+        if (wasDragging && source && finalTargetPath) {
+            const target = allFiles.find(f => f.path === finalTargetPath);
+            if (target && target.is_dir && source.path !== target.path && !(await isDescendant(source.path, target.path))) {
+                try {
+                    const newPath = await join(target.path, source.name);
+                    await moveItem(source.path, newPath);
+                } catch (e) {
+                    errorMessage = `Move failed: ${e}`;
+                }
+            }
+            suppressClick = true; // prevent click after drag
+        }
+    }
+
+    function findHoverTargetPath(x: number, y: number): string | null {
+        const el = document.elementFromPoint(x, y) as HTMLElement | null;
+        if (!el) return null;
+        let cur: HTMLElement | null = el;
+        while (cur) {
+            const path = cur.getAttribute?.('data-path');
+            const isDirAttr = cur.getAttribute?.('data-isdir');
+            if (path && isDirAttr === 'true') {
+                return path;
+            }
+            cur = cur.parentElement as HTMLElement | null;
+        }
+        return null;
+    }
+
+    async function updateDropTarget(targetPath: string | null) {
+        if (dropTargetPath === targetPath) return;
+        dropTargetPath = targetPath;
+        // Schedule auto-expand if hovering a folder
+        if (targetPath) {
+            const file = allFiles.find(f => f.path === targetPath);
+            if (file && file.is_dir) {
+                const existing = expandTimers.get(targetPath);
+                if (existing) clearTimeout(existing);
+                const timer = setTimeout(async () => {
+                    try {
+                        if (!file.expanded) file.expanded = true;
+                        if (file.expanded && (!file.children || file.children.length === 0)) {
+                            file.children = await loadFilesUtil(file.path, (file.level || 0) + 1);
+                            allFiles = flattenFilesUtil(files);
+                            dispatch('filesChanged', { files });
+                        }
+                    } catch (e) {
+                        console.error('Failed to load children for', file.path, e);
+                    }
+                }, 500);
+                expandTimers.set(targetPath, timer);
             }
         }
-        allFiles = flattenFilesUtil(files); // Refresh
-        dispatch('filesChanged', { files });
-        event.dataTransfer!.dropEffect = 'move';
-        dropTargetPath = file.path; // For highlight
-    }
-
-    async function handleDragLeave(event: DragEvent, file: FileEntry) {
-        event.preventDefault();
-        const related = event.relatedTarget as HTMLElement | null;
-        if (related && event.currentTarget && (event.currentTarget as HTMLElement).contains(related)) {
-            return; // Still inside this button
-        }
-
-        console.log("Leave");
-        dropTargetPath = null;
-    }
-
-    async function handleDrop(event: DragEvent, file: FileEntry) {
-        event.preventDefault();
-        // event.stopPropagation();
-        console.log("Drop:", event, file, draggedItem);
-        dropTargetPath = null;
-        if (!draggedItem || !file.is_dir || file.path === draggedItem.path || await isDescendant(draggedItem.path, file.path)) return;
-
-        const newPath = await join(file.path, draggedItem.name);
-        try {
-            moveItem(draggedItem.path, newPath);
-        } catch (e) {
-            errorMessage = `Move failed: ${e}`;
-        }
-        draggedItem = null;
     }
 
     moveItem = async (sourcePath: string, newPath: string) => {
         console.log("Moving item:", sourcePath, "to", newPath);
         const item = allFiles.find(f => f.path === sourcePath);
         if (!item) throw new Error('Item not found');
-        let action = item.is_dir ? "Move Folder" : "Move File"
-        let res = await invoke('perform_action', { action, file: {path: sourcePath, name: item.name, is_dir: item.is_dir}, newName: newPath });
+        let action = item.is_dir ? "Move Folder" : "Move File";
+        let res = await invoke('perform_action', { action, file: { path: sourcePath, name: item.name, is_dir: item.is_dir }, newName: newPath });
         console.log(res);
-        const oldParent = await dirname(sourcePath);
-        const newParent = await dirname(newPath);
-        await refreshPathInStore(oldParent);
-        await refreshPathInStore(newParent);
+        const oldParent = await safeDirname(sourcePath);
+        const newParent = await safeDirname(newPath);
+        if (oldParent) await refreshPathInStore(oldParent);
+        if (newParent && newParent !== oldParent) await refreshPathInStore(newParent);
     };
 
     async function saveNewItem(event: KeyboardEvent, item: FileEntry) {
@@ -299,6 +364,11 @@
     }
 
     async function onSelectFile(file: FileEntry, event: MouseEvent) {
+        // If a drag just happened, suppress the click action to avoid toggling/opening
+        if (suppressClick) {
+            suppressClick = false;
+            return;
+        }
         if (event.button === 0) {
             toggleFileMenu(event, false);
             if (file.is_dir) {
@@ -355,7 +425,8 @@
                 <ul>
                     {#each allFiles as file}
                         <li
-
+                                data-path={file.path}
+                                data-isdir={file.is_dir}
                                 class:drop-target={file.is_dir && dropTargetPath === file.path}
                         >
                             {#if file.isEditing}
@@ -383,16 +454,9 @@
                                 {/if}
                             {:else}
                                 <button
-                                        draggable="true"
-                                        on:dragenter={(e) => e.preventDefault()}
-                                        on:dragstart={(e) => handleDragStart(e, file)}
-                                        on:dragover={(e) => handleDragOver(e, file)}
-                                        on:dragleave={(e) => handleDragLeave(e, file)}
-                                        on:dragend={() => {if (draggedItem && dropTargetPath) {
-                                            handleDrop(new DragEvent("drop"), { name: "", path: dropTargetPath, is_dir: true });
-                                        }}}
-                                        on:drop={(e) => handleDrop(e, file)}
-                                        on:mousedown={(event) => onSelectFile(file, event)}
+                                        on:mousedown={(event) => startPress(file, event)}
+                                        on:click={(event) => onSelectFile(file, event)}
+                                        on:contextmenu={(event) => { event.preventDefault(); toggleFileMenu(event, true, file.is_dir, file.path, projectPath); }}
                                         class={`file-list-item ${selectedFilePath === file.path ? 'selected' : ''} ${file.is_dir ? 'directory' : 'file'}`}
                                         style={`padding-left: ${(file.level || 0) * 1.5 + 0.5}rem;`}
                                 >
@@ -423,9 +487,22 @@
     {/if}
 </div>
 
+{#if isDragging && draggedItem}
+    <div class="drag-ghost" style={`top: ${dragY}px; left: ${dragX}px;`}>
+        <span class="item-icon">
+            {#if draggedItem.is_dir}
+                <Folder size={14} />
+            {:else}
+                <File size={14} />
+            {/if}
+        </span>
+        <span class="name">{draggedItem.name}</span>
+    </div>
+{/if}
+
 <button aria-label="resizer" class="resizer" on:mousedown={handleResize}></button>
 
 <style lang="scss">
   @use "../style/sidebar.scss";
-  .drop-target .file-list-item { background: var(--secondary-300); }
+
 </style>

@@ -73,6 +73,108 @@
     let runNameToId: Record<string, string> = {};
     let currentTheme: string;
 
+    // Workspace persistence (per project)
+    type WorkspaceState = {
+        openTabs: string[];
+        activeTab: string | null;
+        expanded: string[];
+        sidebarWidth: number;
+        isSidebarOpen: boolean;
+        terminalHeight: number;
+        isTerminalOpen: boolean;
+    };
+
+    function wsKey(path: string | null): string | null {
+        if (!path) return null;
+        return `workspace:${path}`;
+    }
+
+    function collectExpandedPaths(list: FileEntry[]): string[] {
+        const out: string[] = [];
+        function walk(nodes: FileEntry[]) {
+            for (const n of nodes) {
+                if (n.is_dir && (n as any).expanded) {
+                    out.push(n.path);
+                    if (n.children && n.children.length) walk(n.children);
+                }
+            }
+        }
+        walk(list);
+        return out;
+    }
+
+    function saveWorkspace() {
+        try {
+            if (!projectPath) return;
+            const key = wsKey(projectPath);
+            if (!key) return;
+            const state: WorkspaceState = {
+                openTabs: openFiles.map(f => f.path),
+                activeTab: (activeFileIndex >= 0 && activeFileIndex < openFiles.length) ? openFiles[activeFileIndex].path : null,
+                expanded: collectExpandedPaths(files),
+                sidebarWidth,
+                isSidebarOpen,
+                terminalHeight,
+                isTerminalOpen,
+            };
+            localStorage.setItem(key, JSON.stringify(state));
+        } catch (e) {
+            // best-effort only
+            console.warn('saveWorkspace failed', e);
+        }
+    }
+
+    async function restoreExpanded(paths: string[]) {
+        // Expand each saved directory path sequentially to ensure children are loaded
+        for (const p of paths) {
+            try { await expandFolderInSidebar(p); } catch (e) { /* ignore */ }
+        }
+    }
+
+    async function restoreOpenTabs(paths: string[], active: string | null) {
+        const openedIndices: number[] = [];
+        for (const p of paths) {
+            try {
+                const name = await basename(p);
+                const entry: FileEntry = { path: p, name, is_dir: false, level: 0, parent_dir: '', children: undefined } as any;
+                const beforeLen = openFiles.length;
+                openFileFromSidebar(entry);
+                if (openFiles.length === beforeLen) {
+                    // already open; record its index
+                    const idx = openFiles.findIndex(f => f.path === p);
+                    if (idx !== -1) openedIndices.push(idx);
+                } else {
+                    openedIndices.push(openFiles.length - 1);
+                }
+            } catch { /* ignore */ }
+        }
+        if (active) {
+            const idx = openFiles.findIndex(f => f.path === active);
+            if (idx !== -1) {
+                switchToFile(idx);
+            }
+        }
+    }
+
+    // Debounced auto-save of workspace whenever relevant UI state changes
+    let _saveWsTimer: any = null;
+    $: (function () {
+        if (!projectPath) return;
+        // Touch all deps so Svelte tracks them
+        const deps = {
+            open: openFiles.map(f => f.path),
+            active: activeFileIndex,
+            expanded: collectExpandedPaths(files),
+            sw: sidebarWidth,
+            so: isSidebarOpen,
+            th: terminalHeight,
+            to: isTerminalOpen,
+        };
+        // Debounce writes to avoid thrashing during bulk updates
+        if (_saveWsTimer) clearTimeout(_saveWsTimer);
+        _saveWsTimer = setTimeout(() => { try { saveWorkspace(); } catch {} }, 150);
+    })();
+
     // user/system info
     let user: string = '';
     let host: string = '';
@@ -273,6 +375,32 @@
                 projectPath,
                 files
             }));
+
+            // Try restore workspace (expanded folders, open tabs, UI sizes) after initial tree
+            try {
+                const key = wsKey(projectPath);
+                if (key) {
+                    const raw = localStorage.getItem(key);
+                    if (raw) {
+                        const ws: Partial<WorkspaceState> = JSON.parse(raw || '{}');
+                        if (typeof ws.sidebarWidth === 'number') sidebarWidth = ws.sidebarWidth as number;
+                        if (typeof ws.isSidebarOpen === 'boolean') isSidebarOpen = ws.isSidebarOpen as boolean;
+                        if (typeof ws.terminalHeight === 'number') terminalHeight = ws.terminalHeight as number;
+                        if (typeof ws.isTerminalOpen === 'boolean') isTerminalOpen = ws.isTerminalOpen as boolean;
+                        const expanded = Array.isArray(ws.expanded) ? (ws.expanded as string[]) : [];
+                        if (expanded.length) {
+                            await restoreExpanded(expanded);
+                        }
+                        const tabs = Array.isArray(ws.openTabs) ? (ws.openTabs as string[]) : [];
+                        const active = (typeof ws.activeTab === 'string') ? (ws.activeTab as string) : null;
+                        if (tabs.length) {
+                            await restoreOpenTabs(tabs, active);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to restore workspace', e);
+            }
         }
 
         const info = await invoke('get_system_info') as { user: string; host: string; home: string };
@@ -293,6 +421,24 @@
                 if (state.projectPath) {
                     // Refresh file tree
                     await refreshPathInStore(state.projectPath);
+
+                    // Reapply expanded folders from saved workspace so refreshes don't collapse the tree
+                    try {
+                        const key = wsKey(state.projectPath);
+                        if (key) {
+                            const raw = localStorage.getItem(key);
+                            if (raw) {
+                                const ws: Partial<WorkspaceState> = JSON.parse(raw || '{}');
+                                const expanded = Array.isArray(ws.expanded) ? (ws.expanded as string[]) : [];
+                                if (expanded.length) {
+                                    await restoreExpanded(expanded);
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Failed to reapply expanded folders after fs-changed', e);
+                    }
+
                     // Refresh project info (name/type/run configs) so run menu reflects package.json/Cargo.toml changes
                     try {
                         const info: any = await invoke('get_project_info', { path: state.projectPath });

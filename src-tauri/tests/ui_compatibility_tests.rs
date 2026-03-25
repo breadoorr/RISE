@@ -1,122 +1,67 @@
-// #[cfg(test)]
-// mod ui_compatibility_tests {
-//     use std::env;
-//     use std::process::Command;
-//
-//     // Test that the application can be built on the current platform
-//     #[test]
-//     fn test_build_on_current_platform() {
-//         // Skip this test in CI environments as it's handled by the workflow
-//         if env::var("CI").is_ok() {
-//             return;
-//         }
-//
-//         // Run cargo build to ensure the application can be built
-//         let output = Command::new("cargo")
-//             .args(["build", "--verbose"])
-//             .current_dir(env!("CARGO_MANIFEST_DIR"))
-//             .output()
-//             .expect("Failed to execute cargo build");
-//
-//         assert!(output.status.success(),
-//             "Build failed: {}", String::from_utf8_lossy(&output.stderr));
-//     }
-//
-//     // Test window creation capabilities
-//     #[test]
-//     fn test_window_config() {
-//         use std::fs;
-//         use std::path::Path;
-//
-//         // Read the tauri.conf.json file to verify window configuration
-//         let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
-//         let config_content = fs::read_to_string(config_path)
-//             .expect("Failed to read tauri.conf.json");
-//
-//         // Check that the window configuration exists
-//         assert!(config_content.contains("\"windows\""),
-//             "Window configuration not found in tauri.conf.json");
-//
-//         // Check for platform-specific window properties
-//         #[cfg(target_os = "macos")]
-//         {
-//             // macOS-specific window properties
-//             assert!(config_content.contains("\"transparent\"") || config_content.contains("\"decorations\""),
-//                 "macOS window properties not found");
-//         }
-//
-//         #[cfg(target_os = "windows")]
-//         {
-//             // Windows-specific window properties
-//             assert!(config_content.contains("\"decorations\""),
-//                 "Windows window properties not found");
-//         }
-//
-//         #[cfg(target_os = "linux")]
-//         {
-//             // Linux-specific window properties
-//             assert!(config_content.contains("\"decorations\""),
-//                 "Linux window properties not found");
-//         }
-//     }
-//
-//     // Test dialog capabilities
-//     #[test]
-//     fn test_dialog_capabilities() {
-//         use std::fs;
-//         use std::path::Path;
-//
-//         // Read the tauri.conf.json file to verify dialog capabilities
-//         let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
-//         let config_content = fs::read_to_string(config_path)
-//             .expect("Failed to read tauri.conf.json");
-//
-//         // Check that dialog capabilities are enabled
-//         assert!(config_content.contains("\"dialog\""),
-//             "Dialog capabilities not found in tauri.conf.json");
-//         assert!(config_content.contains("\"open\"") && config_content.contains("\"save\""),
-//             "Open and save dialog capabilities not found");
-//     }
-//
-//     // Test shell capabilities
-//     #[test]
-//     fn test_shell_capabilities() {
-//         use std::fs;
-//         use std::path::Path;
-//
-//         // Read the tauri.conf.json file to verify shell capabilities
-//         let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
-//         let config_content = fs::read_to_string(config_path)
-//             .expect("Failed to read tauri.conf.json");
-//
-//         // Check that shell capabilities are enabled
-//         assert!(config_content.contains("\"shell\""),
-//             "Shell capabilities not found in tauri.conf.json");
-//         assert!(config_content.contains("\"open\""),
-//             "Shell open capability not found");
-//     }
-//
-//     // Test bundle configuration
-//     #[test]
-//     fn test_bundle_configuration() {
-//         use std::fs;
-//         use std::path::Path;
-//
-//         // Read the tauri.conf.json file to verify bundle configuration
-//         let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
-//         let config_content = fs::read_to_string(config_path)
-//             .expect("Failed to read tauri.conf.json");
-//
-//         // Check that bundle configuration exists
-//         assert!(config_content.contains("\"bundle\""),
-//             "Bundle configuration not found in tauri.conf.json");
-//
-//         // Check for platform-specific icons
-//         // assert!(config_content.contains("\"icon.icns\""),
-//         //     "macOS icon not found in bundle configuration");
-//         // assert!(config_content.contains("\"icon.ico\""),
-//         //     "Windows icon not found in bundle configuration");
-//         // assert!(config_content.contains("\"128x128.png\""),
-//         //     "Linux icon not found in bundle configuration");
-//     }
-// }
+use std::fs;
+use std::path::Path;
+
+// These UI compatibility tests validate the current Tauri v2 setup by
+// inspecting the Rust source (no building, no UI spawning). This keeps
+// them fast, deterministic, and cross-platform.
+
+fn lib_rs_path() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("lib.rs")
+}
+
+fn read_lib_rs() -> String {
+    fs::read_to_string(lib_rs_path()).expect("Failed to read src/lib.rs")
+}
+
+#[test]
+fn test_plugins_enabled_in_builder() {
+    let src = read_lib_rs();
+    // Verify plugins are registered
+    assert!(src.contains(".plugin(tauri_plugin_dialog::init())"),
+        "Expected dialog plugin to be initialized in Builder");
+    assert!(src.contains(".plugin(tauri_plugin_fs::init())"),
+        "Expected fs plugin to be initialized in Builder");
+}
+
+#[test]
+fn test_expected_commands_are_registered() {
+    let src = read_lib_rs();
+
+    // The invoke handler is built via tauri::generate_handler![ ... ]
+    // We check for a few representative commands that the UI depends on.
+    let must_have = [
+        "get_actions",
+        "perform_action",
+        "get_app_theme",
+        "update_app_theme",
+        "search_in_project",
+        "search_paths_in_project",
+        "replace_in_project",
+        // Process/terminal related
+        "start_process",
+        "write_to_process",
+        "kill_process",
+    ];
+
+    // First ensure we even have the handler macro around
+    assert!(src.contains("tauri::generate_handler!["),
+        "Expected tauri::generate_handler! macro in src/lib.rs");
+
+    for sym in must_have.iter() {
+        assert!(src.contains(sym), "Expected command '{}' to be registered in generate_handler!", sym);
+    }
+}
+
+#[test]
+fn test_macos_window_style_configuration_present() {
+    let src = read_lib_rs();
+    // Check that we have macOS-specific configuration behind cfg gates
+    let has_cfg = src.contains("cfg(target_os = \"macos\")");
+    let has_transparent = src.contains("TitleBarStyle::Transparent");
+    let has_cocoa_bits = src.contains("NSFullSizeContentViewWindowMask")
+        || src.contains("setTitlebarAppearsTransparent_");
+
+    assert!(has_cfg, "Expected macOS cfg-gated code in src/lib.rs");
+    assert!(has_transparent, "Expected TitleBarStyle::Transparent on macOS");
+    assert!(has_cocoa_bits, "Expected extra macOS window bridging calls present");
+}
