@@ -42,7 +42,6 @@ jobs:
   # Second job: Push to release branch if tests pass
   push-to-release:
     name: Push to Release Branch
-    needs: test-compatibility
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -59,7 +58,6 @@ jobs:
 
   publish-tauri:
     name: Publish Release
-    needs: test-compatibility
     permissions:
       contents: write
     strategy:
