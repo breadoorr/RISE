@@ -33,7 +33,7 @@ pub struct EditorBuffer {
 //static created sets of needed data, and variables
 lazy_static! {
     pub static ref EDITOR_BUFFERS: Mutex<HashMap<String, EditorBuffer>> = Mutex::new(HashMap::new());
-    pub static ref CONFIG_FILE: String = Path::new("/Users/ddorabble/RISE").to_string_lossy().into_owned();
+    pub static ref CONFIG_FILE: String = Path::new("/RISE").to_string_lossy().into_owned();
     static ref APP_CONFIG: Mutex<AppConfig> = Mutex::new(load_config());
     static ref CONFIG_DIRTY: Mutex<bool> = Mutex::new(false);
     // Long-running process registry: id -> child and stdin
